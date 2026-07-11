@@ -1,0 +1,12 @@
+# Build output
+obs-plugin/build*/
+
+# Xcode / XcodeGen
+ios-app/*.xcodeproj
+ios-app/OBSCam.xcodeproj
+xcuserdata/
+DerivedData/
+*.xcworkspace
+
+# macOS
+.DS_Store

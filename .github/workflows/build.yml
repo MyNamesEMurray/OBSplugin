@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  obs-plugin-linux:
+    name: OBS plugin (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libobs-dev \
+            libavcodec-dev libavutil-dev
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-Wall -Wextra -Werror"
+        working-directory: obs-plugin
+
+      - name: Build
+        run: cmake --build build
+        working-directory: obs-plugin
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-camera-source-linux-x86_64
+          path: |
+            obs-plugin/build/ios-camera-source.so
+            obs-plugin/data/
+
+  ios-app:
+    name: iOS app (OBSCam)
+    # Needs Xcode 16+: current XcodeGen emits project format 77, which
+    # Xcode 15 (macos-14 runners) cannot open.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios-app
+
+      # Builds for the iOS Simulator so no signing certificates are needed.
+      # This validates that all Swift sources compile; producing an
+      # installable device build requires an Apple Developer signing
+      # identity (see README notes on releases).
+      - name: Build (Simulator, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OBSCam.xcodeproj \
+            -scheme OBSCam \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
+        working-directory: ios-app
