@@ -124,3 +124,27 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
         working-directory: ios-app
+
+      # Unsigned device build packaged as an .ipa. It cannot be installed
+      # as-is: sideload it with a tool that re-signs with your Apple ID
+      # (Sideloadly / AltStore on Windows or macOS).
+      - name: Build unsigned device IPA
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OBSCam.xcodeproj \
+            -scheme OBSCam \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO
+          mkdir -p Payload
+          cp -R DerivedData/Build/Products/Release-iphoneos/OBSCam.app Payload/
+          zip -ry OBSCam-unsigned.ipa Payload
+        working-directory: ios-app
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OBSCam-unsigned-ipa
+          path: ios-app/OBSCam-unsigned.ipa
