@@ -58,6 +58,15 @@ static inline void net_shutdown(void)
 
 #endif
 
+static inline int net_last_error(void)
+{
+#ifdef _WIN32
+	return WSAGetLastError();
+#else
+	return errno;
+#endif
+}
+
 static inline bool net_set_nonblocking(socket_t s)
 {
 #ifdef _WIN32

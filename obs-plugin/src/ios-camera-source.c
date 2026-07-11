@@ -274,8 +274,14 @@ static bool client_read(struct ios_camera_source *s, struct client_state *c)
 {
 	uint8_t chunk[RECV_CHUNK];
 	int n = (int)recv(c->sock, (char *)chunk, sizeof(chunk), 0);
-	if (n <= 0)
+	if (n == 0) {
+		blog(LOG_INFO, "[ios-camera] connection closed by device");
 		return false;
+	}
+	if (n < 0) {
+		blog(LOG_INFO, "[ios-camera] recv error %d", net_last_error());
+		return false;
+	}
 
 	recv_buf_append(&c->buf, chunk, (size_t)n);
 
@@ -355,8 +361,11 @@ static void *server_thread(void *data)
 				listener, (struct sockaddr *)&from, &from_len);
 			if (accepted != OBSC_INVALID_SOCKET) {
 				/* Newest connection wins; drop the old one. */
-				if (client.sock != OBSC_INVALID_SOCKET)
+				if (client.sock != OBSC_INVALID_SOCKET) {
+					blog(LOG_INFO,
+					     "[ios-camera] replacing existing connection");
 					client_disconnect(s, &client);
+				}
 				net_set_nonblocking(accepted);
 				int yes = 1;
 				setsockopt(accepted, IPPROTO_TCP, TCP_NODELAY,
