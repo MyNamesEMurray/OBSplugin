@@ -150,6 +150,7 @@ final class Streamer: ObservableObject {
     }
 
     private var reconnectAttempts = 0
+    private var reconnectPending = false
     private static let maxReconnectAttempts = 5
 
     private func handleClientState(_ state: StreamClient.State) {
@@ -157,6 +158,7 @@ final class Streamer: ObservableObject {
         switch state {
         case .connected:
             reconnectAttempts = 0
+            reconnectPending = false
             status = .streaming
             let size = resolution.size
             client.sendVideoConfig(width: size.width, height: size.height,
@@ -173,6 +175,7 @@ final class Streamer: ObservableObject {
     /// Retry a dropped connection a few times before giving up — keeps a
     /// momentary Wi-Fi hiccup from ending the stream.
     private func scheduleReconnect(after state: StreamClient.State) {
+        guard !reconnectPending else { return }
         guard reconnectAttempts < Self.maxReconnectAttempts else {
             if case .failed(let message) = state {
                 status = .error(message)
@@ -183,6 +186,7 @@ final class Streamer: ObservableObject {
             return
         }
         reconnectAttempts += 1
+        reconnectPending = true
         status = .connecting
 
         let host = self.host.trimmingCharacters(in: .whitespaces)
@@ -191,6 +195,7 @@ final class Streamer: ObservableObject {
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard let self, self.isStreaming else { return }
+            self.reconnectPending = false
             self.encoder?.requestKeyframe()
             self.client.connect(host: host, port: port)
         }

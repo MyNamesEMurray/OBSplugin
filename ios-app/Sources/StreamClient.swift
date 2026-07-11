@@ -21,6 +21,11 @@ final class StreamClient {
     private let queue = DispatchQueue(label: "obscam.network")
     private var pingTimer: DispatchSourceTimer?
 
+    /// Video frames queued into the connection but not yet processed.
+    /// Guarded by `queue` (all sends and completions run there).
+    private var inFlightFrames = 0
+    private static let maxInFlightFrames = 60
+
     func connect(host: String, port: UInt16) {
         disconnect()
 
@@ -39,8 +44,9 @@ final class StreamClient {
         self.connection = connection
         state = .connecting
 
-        connection.stateUpdateHandler = { [weak self] newState in
-            guard let self else { return }
+        connection.stateUpdateHandler = { [weak self, weak connection] newState in
+            guard let self, let connection,
+                  self.connection === connection else { return }
             switch newState {
             case .ready:
                 self.state = .connected
@@ -77,6 +83,9 @@ final class StreamClient {
         pingTimer = nil
         connection?.cancel()
         connection = nil
+        queue.async { [weak self] in
+            self?.inFlightFrames = 0
+        }
     }
 
     private func receiveLoop(on connection: NWConnection) {
@@ -93,11 +102,38 @@ final class StreamClient {
 
     // MARK: - Sending
 
-    private func send(_ data: Data) {
-        connection?.send(content: data, completion: .contentProcessed { [weak self] error in
-            if let error {
-                self?.state = .failed(error.localizedDescription)
-                self?.teardown()
+    /// True when `error` just means the connection was cancelled by us —
+    /// expected during teardown/reconnect, never a real failure.
+    private static func isCancellation(_ error: NWError) -> Bool {
+        if case .posix(let code) = error, code == .ECANCELED {
+            return true
+        }
+        return false
+    }
+
+    private func send(_ data: Data, isVideoFrame: Bool = false) {
+        // All connection access and counter updates happen on `queue`;
+        // callers may be on the main thread or the encoder thread.
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.sendOnQueue(data, isVideoFrame: isVideoFrame)
+        }
+    }
+
+    private func sendOnQueue(_ data: Data, isVideoFrame: Bool) {
+        guard let connection else { return }
+        connection.send(content: data, completion: .contentProcessed { [weak self, weak connection] error in
+            guard let self else { return }
+            if isVideoFrame && self.inFlightFrames > 0 {
+                self.inFlightFrames -= 1
+            }
+            // Ignore results from connections we've already abandoned, and
+            // our own cancellations — reacting to those poisons the next
+            // connection attempt.
+            guard let connection, self.connection === connection else { return }
+            if let error, !Self.isCancellation(error) {
+                self.state = .failed(error.localizedDescription)
+                self.teardown()
             }
         })
     }
@@ -123,12 +159,23 @@ final class StreamClient {
         send(OBSCProtocol.packet(type: .videoConfig, payload: payload))
     }
 
+    /// Called from the encoder's output thread; hops to the network queue
+    /// so the in-flight counter stays consistent. If the network can't keep
+    /// up, non-keyframes are dropped rather than queued without bound.
     func sendVideoFrame(_ frame: H264Encoder.EncodedFrame) {
-        let flags: OBSCProtocol.Flags = frame.isKeyframe ? [.keyframe] : []
-        send(OBSCProtocol.packet(type: .video,
-                                 flags: flags,
-                                 ptsNanoseconds: frame.ptsNanoseconds,
-                                 payload: frame.data))
+        queue.async { [weak self] in
+            guard let self, self.connection != nil else { return }
+            if self.inFlightFrames >= Self.maxInFlightFrames && !frame.isKeyframe {
+                return
+            }
+            self.inFlightFrames += 1
+            let flags: OBSCProtocol.Flags = frame.isKeyframe ? [.keyframe] : []
+            self.sendOnQueue(OBSCProtocol.packet(type: .video,
+                                                 flags: flags,
+                                                 ptsNanoseconds: frame.ptsNanoseconds,
+                                                 payload: frame.data),
+                             isVideoFrame: true)
+        }
     }
 
     private func startPing() {
