@@ -48,9 +48,11 @@ add_library(${PROJECT_NAME} MODULE
   src/plugin-main.c
   src/ios-camera-source.c
   src/h264-decoder.c
+  src/usbmux.c
   src/protocol.h
   src/net-compat.h
   src/h264-decoder.h
+  src/usbmux.h
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs ${FFMPEG_TARGET})

@@ -56,6 +56,17 @@ be monotonic; OBS re-bases async timestamps itself.
 Optional keep-alive, empty payload, sent by the client every ~2 s while idle.
 The server ignores it.
 
+## USB transport
+
+The packet protocol is identical over USB; only the transport roles flip.
+The app listens on TCP port **9979** on the device, and the plugin dials
+that port through the usbmuxd protocol (Apple Mobile Device Service on
+`localhost:27015` on Windows; the `/var/run/usbmuxd` socket on
+macOS/Linux): `ListDevices` → first attached device → `Connect` with the
+port in network byte order. After a successful `Connect` result the mux
+socket is a raw byte pipe and the normal packet stream begins with the
+app's HELLO.
+
 ## Discovery (optional)
 
 The plugin listens for UDP datagrams on port **9978** (discovery port =

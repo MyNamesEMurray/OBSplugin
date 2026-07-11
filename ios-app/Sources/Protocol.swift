@@ -7,6 +7,9 @@ enum OBSCProtocol {
     static let headerSize = 20
     static let defaultPort: UInt16 = 9977
     static let discoveryPortOffset: UInt16 = 1
+    /// In USB mode the app listens on this port; the OBS plugin dials it
+    /// through usbmuxd (the cable).
+    static let usbPort: UInt16 = 9979
     static let discoverRequest = "OBSC_DISCOVER"
     static let discoverReplyPrefix = "OBSC_HERE:"
 

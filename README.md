@@ -33,6 +33,10 @@ The video appears in the OBS source within a second or two. Disconnecting
 
 ## Features
 
+- **Wi-Fi or USB**: stream over the local network, or over the Lightning/USB-C
+  cable via Apple's device mux (usbmuxd; on Windows install iTunes). USB mode
+  needs no network at all and charges the phone while streaming. Select
+  "USB" in the app and "USB cable" in the OBS source's Connection setting.
 - 720p / 1080p at 30 or 60 fps, hardware-encoded (low battery/CPU cost)
 - Front or back camera, mirrored front-camera preview
 - Automatic OBS discovery on the LAN (UDP broadcast), with manual IP fallback

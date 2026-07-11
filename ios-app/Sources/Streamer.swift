@@ -22,7 +22,18 @@ final class Streamer: ObservableObject {
         }
     }
 
+    enum ConnectionMode: String, CaseIterable, Identifiable {
+        case wifi
+        case usb
+
+        var id: String { rawValue }
+        var label: String { self == .wifi ? "Wi-Fi" : "USB" }
+    }
+
     // Settings (persisted to UserDefaults)
+    @Published var connectionMode: ConnectionMode {
+        didSet { UserDefaults.standard.set(connectionMode.rawValue, forKey: "connectionMode") }
+    }
     @Published var host: String {
         didSet { UserDefaults.standard.set(host, forKey: "host") }
     }
@@ -52,6 +63,8 @@ final class Streamer: ObservableObject {
 
     init() {
         let defaults = UserDefaults.standard
+        connectionMode = ConnectionMode(
+            rawValue: defaults.string(forKey: "connectionMode") ?? "") ?? .wifi
         host = defaults.string(forKey: "host") ?? ""
         portText = defaults.string(forKey: "port") ?? "\(OBSCProtocol.defaultPort)"
         resolution = CameraManager.Resolution(
@@ -96,13 +109,17 @@ final class Streamer: ObservableObject {
         }
 
         let trimmedHost = host.trimmingCharacters(in: .whitespaces)
-        guard !trimmedHost.isEmpty else {
-            status = .error("Enter the IP address of the computer running OBS")
-            return
-        }
-        guard let port = UInt16(portText), port >= 1024 else {
-            status = .error("Invalid port")
-            return
+        var dialPort: UInt16 = OBSCProtocol.defaultPort
+        if connectionMode == .wifi {
+            guard !trimmedHost.isEmpty else {
+                status = .error("Enter the IP address of the computer running OBS")
+                return
+            }
+            guard let port = UInt16(portText), port >= 1024 else {
+                status = .error("Invalid port")
+                return
+            }
+            dialPort = port
         }
 
         let size = resolution.size
@@ -133,7 +150,12 @@ final class Streamer: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true
 
         camera.start()
-        client.connect(host: trimmedHost, port: port)
+        switch connectionMode {
+        case .wifi:
+            client.start(.dial(host: trimmedHost, port: dialPort))
+        case .usb:
+            client.start(.listen(port: OBSCProtocol.usbPort))
+        }
     }
 
     func stop() {
@@ -166,7 +188,19 @@ final class Streamer: ObservableObject {
             // Fresh connection: make sure OBS gets a decodable frame ASAP.
             encoder?.requestKeyframe()
         case .failed, .disconnected:
-            scheduleReconnect(after: state)
+            // In USB mode the client keeps its listener alive and reports
+            // .connecting while waiting for OBS to dial back; .failed there
+            // means the listener itself died — not recoverable by dialing.
+            if connectionMode == .usb {
+                if case .failed(let message) = state {
+                    status = .error(message)
+                    stopKeepingError()
+                } else {
+                    status = .connecting
+                }
+            } else {
+                scheduleReconnect(after: state)
+            }
         case .connecting:
             status = .connecting
         }
@@ -197,7 +231,7 @@ final class Streamer: ObservableObject {
             guard let self, self.isStreaming else { return }
             self.reconnectPending = false
             self.encoder?.requestKeyframe()
-            self.client.connect(host: host, port: port)
+            self.client.start(.dial(host: host, port: port))
         }
     }
 

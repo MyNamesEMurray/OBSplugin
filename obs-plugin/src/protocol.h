@@ -16,6 +16,10 @@
 #define OBSC_DEFAULT_PORT 9977
 #define OBSC_DISCOVERY_PORT_OFFSET 1
 
+/* In USB mode the app listens on this port on the device; the plugin
+ * dials it through usbmuxd. */
+#define OBSC_USB_PORT 9979
+
 #define OBSC_DISCOVER_REQUEST "OBSC_DISCOVER"
 #define OBSC_DISCOVER_REPLY_PREFIX "OBSC_HERE:"
 

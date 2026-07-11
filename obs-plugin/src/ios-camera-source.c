@@ -19,8 +19,12 @@
 #include "net-compat.h"
 #include "protocol.h"
 #include "h264-decoder.h"
+#include "usbmux.h"
 
 #define S_PORT "port"
+#define S_MODE "mode"
+#define MODE_NETWORK "network"
+#define MODE_USB "usb"
 #define T_(s) obs_module_text(s)
 
 #define RECV_CHUNK 65536
@@ -39,6 +43,7 @@ struct ios_camera_source {
 	volatile bool stop;
 
 	int port;
+	bool usb_mode;
 
 	pthread_mutex_t status_mutex;
 	struct dstr status;
@@ -307,12 +312,49 @@ static bool client_read(struct ios_camera_source *s, struct client_state *c)
 	return true;
 }
 
-static void *server_thread(void *data)
+/*
+ * USB mode: the app on the device listens; we dial it through usbmuxd.
+ * Retry every couple of seconds until a device with the app appears.
+ */
+static void usb_loop(struct ios_camera_source *s)
 {
-	struct ios_camera_source *s = data;
+	while (!s->stop) {
+		set_status(s, "%s", T_("Status.WaitingUSB"));
 
-	os_set_thread_name("ios-camera-server");
+		socket_t sock = usbmux_connect_first(OBSC_USB_PORT);
+		if (sock == OBSC_INVALID_SOCKET) {
+			for (int i = 0; i < 20 && !s->stop; i++)
+				os_sleep_ms(100);
+			continue;
+		}
 
+		blog(LOG_INFO, "[ios-camera] connected to device over USB");
+		set_status(s, "%s", T_("Status.Connected"));
+
+		struct client_state client = {.sock = sock};
+
+		while (!s->stop) {
+			fd_set fds;
+			FD_ZERO(&fds);
+			FD_SET(sock, &fds);
+			struct timeval tv = {.tv_sec = 0,
+					     .tv_usec = 200 * 1000};
+			int ret = select((int)sock + 1, &fds, NULL, NULL, &tv);
+			if (ret < 0)
+				break;
+			if (ret == 0)
+				continue;
+			if (!client_read(s, &client))
+				break;
+		}
+
+		blog(LOG_INFO, "[ios-camera] USB connection ended");
+		client_disconnect(s, &client);
+	}
+}
+
+static void network_loop(struct ios_camera_source *s)
+{
 	socket_t listener = open_tcp_listener(s->port);
 	socket_t discovery = open_discovery_socket(s->port);
 	struct client_state client = {.sock = OBSC_INVALID_SOCKET};
@@ -391,6 +433,18 @@ static void *server_thread(void *data)
 		net_close(listener);
 	if (discovery != OBSC_INVALID_SOCKET)
 		net_close(discovery);
+}
+
+static void *server_thread(void *data)
+{
+	struct ios_camera_source *s = data;
+
+	os_set_thread_name("ios-camera-server");
+
+	if (s->usb_mode)
+		usb_loop(s);
+	else
+		network_loop(s);
 
 	return NULL;
 }
@@ -427,10 +481,12 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 {
 	struct ios_camera_source *s = data;
 	int port = (int)obs_data_get_int(settings, S_PORT);
+	bool usb = strcmp(obs_data_get_string(settings, S_MODE), MODE_USB) == 0;
 
-	if (port != s->port) {
+	if (port != s->port || usb != s->usb_mode) {
 		stop_thread(s);
 		s->port = port;
+		s->usb_mode = usb;
 		start_thread(s);
 	}
 }
@@ -440,6 +496,8 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	struct ios_camera_source *s = bzalloc(sizeof(*s));
 	s->source = source;
 	s->port = (int)obs_data_get_int(settings, S_PORT);
+	s->usb_mode =
+		strcmp(obs_data_get_string(settings, S_MODE), MODE_USB) == 0;
 
 	pthread_mutex_init(&s->status_mutex, NULL);
 	dstr_init(&s->status);
@@ -461,6 +519,7 @@ static void ios_camera_destroy(void *data)
 static void ios_camera_get_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_int(settings, S_PORT, OBSC_DEFAULT_PORT);
+	obs_data_set_default_string(settings, S_MODE, MODE_NETWORK);
 }
 
 static obs_properties_t *ios_camera_get_properties(void *data)
@@ -468,6 +527,12 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 	struct ios_camera_source *s = data;
 
 	obs_properties_t *props = obs_properties_create();
+
+	obs_property_t *mode = obs_properties_add_list(
+		props, S_MODE, T_("Mode"), OBS_COMBO_TYPE_LIST,
+		OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(mode, T_("Mode.Network"), MODE_NETWORK);
+	obs_property_list_add_string(mode, T_("Mode.USB"), MODE_USB);
 
 	obs_properties_add_int(props, S_PORT, T_("Port"), 1024, 65535, 1);
 

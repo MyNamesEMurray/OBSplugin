@@ -10,7 +10,12 @@ struct ContentView: View {
                 statusSection
 
                 if !streamer.isStreaming {
-                    connectionSection
+                    modeSection
+                    if streamer.connectionMode == .wifi {
+                        connectionSection
+                    } else {
+                        usbSection
+                    }
                     cameraSection
                 }
 
@@ -46,10 +51,17 @@ struct ContentView: View {
                 Circle()
                     .fill(statusColor)
                     .frame(width: 10, height: 10)
-                Text(streamer.status.label)
+                Text(statusText)
                     .font(.callout)
             }
         }
+    }
+
+    private var statusText: String {
+        if streamer.status == .connecting && streamer.connectionMode == .usb {
+            return "Waiting for OBS (USB cable)…"
+        }
+        return streamer.status.label
     }
 
     private var statusColor: Color {
@@ -58,6 +70,28 @@ struct ContentView: View {
         case .connecting: return .yellow
         case .streaming: return .green
         case .error: return .red
+        }
+    }
+
+    private var modeSection: some View {
+        Section {
+            Picker("Connection", selection: $streamer.connectionMode) {
+                ForEach(Streamer.ConnectionMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var usbSection: some View {
+        Section("USB") {
+            Label {
+                Text("Connect this device to your computer with a cable, then set the OBS \"iOS Camera\" source's Connection to \"USB cable\". Requires iTunes on Windows.")
+                    .font(.callout)
+            } icon: {
+                Image(systemName: "cable.connector")
+            }
         }
     }
 
