@@ -76,8 +76,8 @@ jobs:
       - name: Build plugin
         run: |
           cmake -S obs-plugin -B plugin-build -G "Visual Studio 17 2022" -A x64 `
-            -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config" `
-            -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib" `
+            -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config;${{ github.workspace }}\obs-studio\deps\w32-pthreads" `
+            -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib;${{ github.workspace }}\obs-build\deps\w32-pthreads\Release\w32-pthreads.lib" `
             -DFFMPEG_INCLUDE_DIR="${{ github.workspace }}\obs-deps\include" `
             -DAVCODEC_LIBRARY="${{ github.workspace }}\obs-deps\lib\avcodec.lib" `
             -DAVUTIL_LIBRARY="${{ github.workspace }}\obs-deps\lib\avutil.lib"
