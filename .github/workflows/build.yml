@@ -39,8 +39,11 @@ jobs:
     name: OBS plugin (Windows)
     runs-on: windows-2022
     env:
-      OBS_REF: "30.1.2"
-      DEPS_TAG: "2024-03-19"
+      # Keep in sync with the OBS release users run: the plugin links the
+      # FFmpeg DLLs from this deps bundle, and OBS must ship the same ones.
+      # OBS 32.1.2 pins obs-deps 2025-08-23 (see its CMakePresets.json).
+      OBS_REF: "32.1.2"
+      DEPS_TAG: "2025-08-23"
     steps:
       - uses: actions/checkout@v4
 
@@ -69,8 +72,9 @@ jobs:
         run: |
           cmake -S obs-studio -B obs-build -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
-            -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_BROWSER=OFF `
-            -DENABLE_SCRIPTING=OFF -DENABLE_WEBSOCKET=OFF -DENABLE_AJA=OFF
+            -DENABLE_UI=OFF -DENABLE_FRONTEND=OFF -DENABLE_PLUGINS=OFF `
+            -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF -DENABLE_WEBSOCKET=OFF `
+            -DENABLE_AJA=OFF
           cmake --build obs-build --target libobs --config Release
 
       - name: Build plugin
