@@ -37,7 +37,9 @@ jobs:
 
   ios-app:
     name: iOS app (OBSCam)
-    runs-on: macos-14
+    # Needs Xcode 16+: current XcodeGen emits project format 77, which
+    # Xcode 15 (macos-14 runners) cannot open.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
