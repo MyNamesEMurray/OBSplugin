@@ -35,6 +35,67 @@ jobs:
             obs-plugin/build/ios-camera-source.so
             obs-plugin/data/
 
+  obs-plugin-windows:
+    name: OBS plugin (Windows)
+    runs-on: windows-2022
+    env:
+      OBS_REF: "30.1.2"
+      DEPS_TAG: "2024-03-19"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout obs-studio (for libobs)
+        uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_REF }}
+          path: obs-studio
+          submodules: recursive
+
+      - name: Download OBS prebuilt dependencies (FFmpeg)
+        run: |
+          curl -L -o deps.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-${{ env.DEPS_TAG }}-x64.zip"
+          7z x deps.zip -oobs-deps
+
+      - name: Cache libobs build
+        id: cache-libobs
+        uses: actions/cache@v4
+        with:
+          path: obs-build
+          key: libobs-${{ env.OBS_REF }}-${{ env.DEPS_TAG }}
+
+      - name: Build libobs
+        if: steps.cache-libobs.outputs.cache-hit != 'true'
+        run: |
+          cmake -S obs-studio -B obs-build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
+            -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF -DENABLE_BROWSER=OFF `
+            -DENABLE_SCRIPTING=OFF -DENABLE_WEBSOCKET=OFF -DENABLE_AJA=OFF
+          cmake --build obs-build --target libobs --config Release
+
+      - name: Build plugin
+        run: |
+          cmake -S obs-plugin -B plugin-build -G "Visual Studio 17 2022" -A x64 `
+            -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config" `
+            -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib" `
+            -DFFMPEG_INCLUDE_DIR="${{ github.workspace }}\obs-deps\include" `
+            -DAVCODEC_LIBRARY="${{ github.workspace }}\obs-deps\lib\avcodec.lib" `
+            -DAVUTIL_LIBRARY="${{ github.workspace }}\obs-deps\lib\avutil.lib"
+          cmake --build plugin-build --config Release
+
+      - name: Package (drop into C:\Program Files\obs-studio)
+        run: |
+          New-Item -ItemType Directory -Force -Path stage\obs-plugins\64bit | Out-Null
+          New-Item -ItemType Directory -Force -Path stage\data\obs-plugins\ios-camera-source | Out-Null
+          Copy-Item plugin-build\Release\ios-camera-source.dll stage\obs-plugins\64bit\
+          Copy-Item -Recurse obs-plugin\data\* stage\data\obs-plugins\ios-camera-source\
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-camera-source-windows-x64
+          path: stage/
+
   ios-app:
     name: iOS app (OBSCam)
     # Needs Xcode 16+: current XcodeGen emits project format 77, which
