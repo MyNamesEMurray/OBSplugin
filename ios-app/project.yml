@@ -1,0 +1,36 @@
+# XcodeGen project definition — run `xcodegen generate` in this directory
+# to produce OBSCam.xcodeproj. See BUILDING.md.
+name: OBSCam
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+targets:
+  OBSCam:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: OBSCam
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: >-
+          OBSCam streams your camera to OBS on your computer.
+        NSLocalNetworkUsageDescription: >-
+          OBSCam connects to OBS Studio on your local network to send the
+          camera feed.
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_STYLE: Automatic
+        # Set your Apple Developer team to run on a device:
+        # DEVELOPMENT_TEAM: XXXXXXXXXX
