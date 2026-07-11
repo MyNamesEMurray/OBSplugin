@@ -127,6 +127,7 @@ final class Streamer: ObservableObject {
         }
         self.encoder = encoder
 
+        reconnectAttempts = 0
         isStreaming = true
         status = .connecting
         UIApplication.shared.isIdleTimerDisabled = true
@@ -148,24 +149,50 @@ final class Streamer: ObservableObject {
         encoder = nil
     }
 
+    private var reconnectAttempts = 0
+    private static let maxReconnectAttempts = 5
+
     private func handleClientState(_ state: StreamClient.State) {
         guard isStreaming else { return }
         switch state {
         case .connected:
+            reconnectAttempts = 0
             status = .streaming
             let size = resolution.size
             client.sendVideoConfig(width: size.width, height: size.height,
                                    fps: Int32(fps))
             // Fresh connection: make sure OBS gets a decodable frame ASAP.
             encoder?.requestKeyframe()
-        case .failed(let message):
-            status = .error(message)
-            stopKeepingError()
-        case .disconnected:
-            status = .error("Disconnected from OBS")
-            stopKeepingError()
+        case .failed, .disconnected:
+            scheduleReconnect(after: state)
         case .connecting:
             status = .connecting
+        }
+    }
+
+    /// Retry a dropped connection a few times before giving up — keeps a
+    /// momentary Wi-Fi hiccup from ending the stream.
+    private func scheduleReconnect(after state: StreamClient.State) {
+        guard reconnectAttempts < Self.maxReconnectAttempts else {
+            if case .failed(let message) = state {
+                status = .error(message)
+            } else {
+                status = .error("Disconnected from OBS")
+            }
+            stopKeepingError()
+            return
+        }
+        reconnectAttempts += 1
+        status = .connecting
+
+        let host = self.host.trimmingCharacters(in: .whitespaces)
+        let port = UInt16(portText) ?? OBSCProtocol.defaultPort
+
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, self.isStreaming else { return }
+            self.encoder?.requestKeyframe()
+            self.client.connect(host: host, port: port)
         }
     }
 

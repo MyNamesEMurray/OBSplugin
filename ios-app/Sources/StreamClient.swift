@@ -46,6 +46,14 @@ final class StreamClient {
                 self.state = .connected
                 self.sendHello()
                 self.startPing()
+                // Drain (and ignore) anything the server might send; also
+                // detects EOF. Must only start once the connection is ready.
+                self.receiveLoop(on: connection)
+            case .waiting(let error):
+                // Keep trying (e.g. transient route/permission delays), but
+                // surface why we're stuck.
+                self.state = .connecting
+                print("StreamClient waiting: \(error)")
             case .failed(let error):
                 self.state = .failed(error.localizedDescription)
                 self.teardown()
@@ -56,8 +64,6 @@ final class StreamClient {
             }
         }
 
-        // Drain (and ignore) anything the server might send; also detects EOF.
-        receiveLoop(on: connection)
         connection.start(queue: queue)
     }
 
