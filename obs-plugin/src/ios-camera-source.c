@@ -33,7 +33,12 @@
 #define S_AUDIO_SYNC "audio_sync_enabled"
 #define S_AUDIO_LATENCY "audio_device_latency_ms"
 #define S_AUTO_CALIBRATE "audio_auto_calibrate"
+#define S_AUTO_VIDEO_DELAY "audio_auto_video_delay"
 #define S_WEB_CONTROL "web_control"
+
+/* Built-in OBS "Video Delay (Async)" filter. */
+#define ASYNC_DELAY_FILTER_ID "async_delay_filter"
+#define ASYNC_DELAY_FILTER_NAME "iOS Camera auto lip-sync delay"
 #define MODE_DIAL "dial"
 #define MODE_USB "usb"
 #define T_(s) obs_module_text(s)
@@ -68,6 +73,7 @@ struct ios_camera_source {
 	int64_t applied_audio_offset;
 	int audio_device_latency_ms;
 	bool auto_calibrate;
+	bool auto_video_delay; /* delay video when the mic is the slower one */
 	int64_t last_video_latency_ns; /* avg capture->decode, for the offset */
 
 	/* Auto lip-sync cross-correlator. `lipsync` is fed by the network
@@ -317,6 +323,47 @@ static void hook_audio(struct ios_camera_source *s, const char *name)
 #define CAL_MIN_CONFIDENCE 0.5
 #define CAL_NS_MS 1000000LL
 
+/*
+ * Adds/updates/removes a private "Video Delay (Async)" filter on our own
+ * source so the video can be delayed to line up with a slower microphone.
+ * delay_ms <= 0 removes it. Safe to call from any thread (OBS guards the
+ * filter list internally).
+ */
+static void set_video_delay(struct ios_camera_source *s, int delay_ms)
+{
+	obs_source_t *existing = obs_source_get_filter_by_name(
+		s->source, ASYNC_DELAY_FILTER_NAME);
+
+	if (delay_ms <= 0) {
+		if (existing) {
+			obs_source_filter_remove(s->source, existing);
+			obs_source_release(existing);
+		}
+		return;
+	}
+
+	if (existing) {
+		obs_data_t *settings = obs_source_get_settings(existing);
+		if ((int)obs_data_get_int(settings, "delay_ms") != delay_ms) {
+			obs_data_set_int(settings, "delay_ms", delay_ms);
+			obs_source_update(existing, settings);
+		}
+		obs_data_release(settings);
+		obs_source_release(existing);
+		return;
+	}
+
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_int(settings, "delay_ms", delay_ms);
+	obs_source_t *filter = obs_source_create_private(
+		ASYNC_DELAY_FILTER_ID, ASYNC_DELAY_FILTER_NAME, settings);
+	if (filter) {
+		obs_source_filter_add(s->source, filter);
+		obs_source_release(filter);
+	}
+	obs_data_release(settings);
+}
+
 static int cmp_i64(const void *a, const void *b)
 {
 	int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
@@ -337,6 +384,7 @@ static void apply_auto_calibrated(struct ios_camera_source *s,
 
 	pthread_mutex_lock(&s->status_mutex);
 	bool enabled = s->audio_sync && s->auto_calibrate;
+	bool video_delay = s->auto_video_delay;
 	snprintf(name, sizeof(name), "%s", s->audio_source);
 	int64_t applied = s->applied_audio_offset;
 	pthread_mutex_unlock(&s->status_mutex);
@@ -398,9 +446,14 @@ static void apply_auto_calibrated(struct ios_camera_source *s,
 
 	int64_t offset = video_latency_ns - median;
 	bool mic_slower = offset < 0;
+	int video_delay_ms = mic_slower
+				     ? (int)((median - video_latency_ns) /
+					     CAL_NS_MS)
+				     : 0;
 	if (mic_slower)
 		offset = 0;
 
+	/* Delay the audio to match the video (mic faster) ... */
 	int64_t diff = offset - applied;
 	if (diff < 0)
 		diff = -diff;
@@ -415,15 +468,25 @@ static void apply_auto_calibrated(struct ios_camera_source *s,
 		}
 	}
 
-	if (mic_slower) {
+	/* ... or delay the video to match a slower mic, if enabled. */
+	if (video_delay)
+		set_video_delay(s, video_delay_ms);
+
+	if (mic_slower && video_delay) {
+		blog(LOG_INFO,
+		     "[ios-camera] auto lip-sync: mic %d ms > video %d ms -> "
+		     "delaying video by %d ms (conf %.2f)",
+		     (int)(median / CAL_NS_MS),
+		     (int)(video_latency_ns / CAL_NS_MS), video_delay_ms,
+		     conf);
+	} else if (mic_slower) {
 		blog(LOG_WARNING,
 		     "[ios-camera] auto lip-sync: mic latency %d ms exceeds "
-		     "video %d ms — audio can't be delayed to match. Add a "
-		     "'Video Delay (Async)' filter of ~%d ms to '%s', or use "
-		     "a lower-latency mic.",
+		     "video %d ms — audio can't be delayed to match. Enable "
+		     "'Auto video delay' to delay the video ~%d ms, or use a "
+		     "lower-latency mic.",
 		     (int)(median / CAL_NS_MS),
-		     (int)(video_latency_ns / CAL_NS_MS),
-		     (int)((median - video_latency_ns) / CAL_NS_MS), name);
+		     (int)(video_latency_ns / CAL_NS_MS), video_delay_ms);
 	} else {
 		blog(LOG_INFO,
 		     "[ios-camera] auto lip-sync: mic %d ms, video %d ms -> "
@@ -955,6 +1018,8 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 	s->audio_device_latency_ms =
 		(int)obs_data_get_int(settings, S_AUDIO_LATENCY);
 	s->auto_calibrate = obs_data_get_bool(settings, S_AUTO_CALIBRATE);
+	s->auto_video_delay =
+		obs_data_get_bool(settings, S_AUTO_VIDEO_DELAY);
 	snprintf(s->audio_source, sizeof(s->audio_source), "%s",
 		 obs_data_get_string(settings, S_AUDIO_SOURCE));
 	bool still_syncing = s->audio_sync &&
@@ -963,6 +1028,7 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 		s->applied_audio_offset = 0;
 	bool want_hook =
 		s->audio_sync && s->auto_calibrate && s->audio_source[0];
+	bool want_video_delay = want_hook && s->auto_video_delay;
 	char hook_name[256];
 	snprintf(hook_name, sizeof(hook_name), "%s", s->audio_source);
 	pthread_mutex_unlock(&s->status_mutex);
@@ -980,6 +1046,11 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 	} else if (!want_hook && was_hooked) {
 		unhook_audio(s);
 	}
+
+	/* Remove our video-delay filter when the feature is off; the apply
+	 * loop re-adds/updates it when needed. */
+	if (!want_video_delay)
+		set_video_delay(s, 0);
 
 	bool web = obs_data_get_bool(settings, S_WEB_CONTROL);
 	if (web && !s->web)
@@ -1028,6 +1099,8 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	s->audio_device_latency_ms =
 		(int)obs_data_get_int(settings, S_AUDIO_LATENCY);
 	s->auto_calibrate = obs_data_get_bool(settings, S_AUTO_CALIBRATE);
+	s->auto_video_delay =
+		obs_data_get_bool(settings, S_AUTO_VIDEO_DELAY);
 	snprintf(s->audio_source, sizeof(s->audio_source), "%s",
 		 obs_data_get_string(settings, S_AUDIO_SOURCE));
 
@@ -1066,6 +1139,7 @@ static void ios_camera_get_defaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, S_AUDIO_SOURCE, "");
 	obs_data_set_default_int(settings, S_AUDIO_LATENCY, 0);
 	obs_data_set_default_bool(settings, S_AUTO_CALIBRATE, false);
+	obs_data_set_default_bool(settings, S_AUTO_VIDEO_DELAY, false);
 	obs_data_set_default_bool(settings, S_WEB_CONTROL, true);
 }
 
@@ -1115,6 +1189,8 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 	obs_enum_sources(add_audio_source, audio_list);
 	obs_properties_add_bool(props, S_AUDIO_SYNC, T_("AudioSync"));
 	obs_properties_add_bool(props, S_AUTO_CALIBRATE, T_("AutoCalibrate"));
+	obs_properties_add_bool(props, S_AUTO_VIDEO_DELAY,
+				T_("AutoVideoDelay"));
 	obs_property_t *audio_lat = obs_properties_add_int(
 		props, S_AUDIO_LATENCY, T_("AudioLatency"), 0, 500, 1);
 	obs_property_int_set_suffix(audio_lat, " ms");

@@ -58,7 +58,10 @@ The video appears in the OBS source within a second or two. Disconnecting
   the plugin sends the phone mic purely as a timing reference and
   cross-correlates it against your real microphone to measure that mic's
   latency directly — fully automatic, no manual entry. The phone audio is
-  never played out.
+  never played out. When the mic is *faster* than the video the audio is
+  delayed to match; when the mic is *slower* (e.g. a buffered audio
+  interface), enabling **Auto video delay** delays the video instead — so
+  either direction is corrected automatically.
 - **Adaptive bitrate**: when the link congests, the app backs the encoder
   off within a second and recovers gradually — no more latency spirals on
   weak Wi-Fi
