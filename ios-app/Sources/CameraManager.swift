@@ -174,8 +174,9 @@ final class CameraManager: NSObject {
 
     var exposureBiasRange: ClosedRange<Float> {
         guard let device = activeDevice else { return -2...2 }
-        return max(device.minExposureTargetBias, -3)
-            ...min(device.maxExposureTargetBias, 3)
+        let lower = max(device.minExposureTargetBias, -3)
+        let upper = min(device.maxExposureTargetBias, 3)
+        return lower...max(upper, lower + 0.1)
     }
 
     func setExposureBias(_ bias: Float) {
