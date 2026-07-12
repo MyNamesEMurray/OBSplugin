@@ -1,0 +1,64 @@
+name: Auto Release
+
+# Every push to main that touches plugin or app code automatically gets a
+# version tag and a published release with installable builds.
+#
+# Version bumping (from the merge/commit message):
+#   default            -> patch  (v0.2.0 -> v0.2.1)
+#   contains "#minor"  -> minor  (v0.2.1 -> v0.3.0)
+#   contains "#major"  -> major  (v0.3.0 -> v1.0.0)
+#   contains "[skip release]" -> no release
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "obs-plugin/**"
+      - "ios-app/**"
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Tag next version
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute and push tag
+        id: bump
+        env:
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          latest=${latest:-v0.1.0}
+          version=${latest#v}
+          IFS=. read -r major minor patch <<< "$version"
+
+          if grep -q '#major' <<< "$MESSAGE"; then
+            major=$((major + 1)); minor=0; patch=0
+          elif grep -q '#minor' <<< "$MESSAGE"; then
+            minor=$((minor + 1)); patch=0
+          else
+            patch=$((patch + 1))
+          fi
+
+          tag="v$major.$minor.$patch"
+          echo "Releasing $tag (previous: $latest)"
+          git tag "$tag"
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Build & publish
+    needs: version
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ needs.version.outputs.tag }}
+    permissions:
+      contents: write

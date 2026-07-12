@@ -1,0 +1,37 @@
+name: Auto-merge
+
+# Arms GitHub's native auto-merge on every non-draft PR: the PR then
+# merges by itself the moment all REQUIRED checks pass.
+#
+# One-time repo setup this depends on (Settings):
+#   1. General -> "Allow auto-merge" (checked)
+#   2. Branch protection rule (or ruleset) for `main` requiring the three
+#      Build checks — without required checks, auto-merge would merge
+#      immediately, before CI finishes.
+#
+# Token note: if armed with the default GITHUB_TOKEN, the eventual merge
+# is performed by github-actions, and pushes by that token do NOT trigger
+# other workflows — which would silently skip the auto-release. Add a
+# fine-grained PAT (contents+pull-requests read/write) as the
+# AUTOMERGE_TOKEN secret so the merge counts as you and the release
+# pipeline fires.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  arm:
+    name: Enable auto-merge
+    runs-on: ubuntu-latest
+    if: "!github.event.pull_request.draft"
+    steps:
+      - name: Arm auto-merge (merge commit)
+        env:
+          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN != '' && secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge --auto --merge \
+            "${{ github.event.pull_request.html_url }}"
