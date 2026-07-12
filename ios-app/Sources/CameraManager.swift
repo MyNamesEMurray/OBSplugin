@@ -52,9 +52,60 @@ final class CameraManager: NSObject {
         }
     }
 
-    static func device(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        AVCaptureDevice.default(.builtInWideAngleCamera, for: .video,
-                                position: position)
+    /// A physical camera the user can pick (Main / Ultra Wide / Telephoto /
+    /// Front — whatever this device actually has).
+    struct Lens: Identifiable, Equatable, Hashable {
+        let deviceType: AVCaptureDevice.DeviceType
+        let position: AVCaptureDevice.Position
+        let label: String
+
+        var id: String {
+            "\(position == .front ? "front" : "back"):\(deviceType.rawValue)"
+        }
+    }
+
+    /// Enumerates the cameras present on this device, back lenses first
+    /// (Main, Ultra Wide, Telephoto), then front.
+    static func availableLenses() -> [Lens] {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera,
+                          .builtInTelephotoCamera],
+            mediaType: .video,
+            position: .unspecified)
+
+        func rank(_ device: AVCaptureDevice) -> Int {
+            let positionRank = device.position == .front ? 10 : 0
+            switch device.deviceType {
+            case .builtInWideAngleCamera: return positionRank + 0
+            case .builtInUltraWideCamera: return positionRank + 1
+            default: return positionRank + 2
+            }
+        }
+
+        return discovery.devices
+            .sorted { rank($0) < rank($1) }
+            .map { device in
+                Lens(deviceType: device.deviceType,
+                     position: device.position,
+                     label: label(for: device))
+            }
+    }
+
+    private static func label(for device: AVCaptureDevice) -> String {
+        if device.position == .front { return "Front" }
+        switch device.deviceType {
+        case .builtInUltraWideCamera: return "Ultra Wide (0.5×)"
+        case .builtInTelephotoCamera: return "Telephoto"
+        default: return "Main (Wide)"
+        }
+    }
+
+    static let defaultLens = Lens(deviceType: .builtInWideAngleCamera,
+                                  position: .back, label: "Main (Wide)")
+
+    static func device(for lens: Lens) -> AVCaptureDevice? {
+        AVCaptureDevice.default(lens.deviceType, for: .video,
+                                position: lens.position)
     }
 
     private static func format(for device: AVCaptureDevice,
@@ -73,17 +124,18 @@ final class CameraManager: NSObject {
         }
     }
 
-    /// Whether this camera can capture the resolution at the frame rate.
+    /// Whether this lens can capture the resolution at the frame rate.
     /// Drives the app's pickers so unsupported combos are never offered.
     static func supports(resolution: Resolution, fps: Int32,
-                         position: AVCaptureDevice.Position) -> Bool {
-        guard let device = device(for: position) else { return false }
+                         lens: Lens) -> Bool {
+        guard let device = device(for: lens) else { return false }
         return format(for: device, resolution: resolution, fps: fps) != nil
     }
 
-    func configure(position: AVCaptureDevice.Position,
+    func configure(lens: Lens,
                    resolution: Resolution,
                    fps: Int32) throws {
+        let position = lens.position
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
@@ -93,14 +145,14 @@ final class CameraManager: NSObject {
         // Format is chosen manually below; presets can't express 4K60.
         session.sessionPreset = .inputPriority
 
-        guard let device = Self.device(for: position) else {
+        guard let device = Self.device(for: lens) else {
             throw NSError(domain: "CameraManager", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Camera not available"])
         }
         guard let format = Self.format(for: device, resolution: resolution, fps: fps) else {
             throw NSError(domain: "CameraManager", code: 4,
                           userInfo: [NSLocalizedDescriptionKey:
-                            "\(resolution.rawValue) at \(fps) fps is not supported by this camera"])
+                            "\(resolution.rawValue) at \(fps) fps is not supported by the \(lens.label) camera"])
         }
 
         let input = try AVCaptureDeviceInput(device: device)

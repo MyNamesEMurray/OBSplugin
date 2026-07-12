@@ -49,10 +49,23 @@ final class Streamer: ObservableObject {
     @Published var fps: Int {
         didSet { UserDefaults.standard.set(fps, forKey: "fps") }
     }
-    @Published var useFrontCamera: Bool {
+    /// The cameras this device actually has (Main / Ultra Wide / …).
+    let availableLenses: [CameraManager.Lens]
+
+    @Published var selectedLens: CameraManager.Lens {
         didSet {
-            UserDefaults.standard.set(useFrontCamera, forKey: "useFrontCamera")
+            UserDefaults.standard.set(selectedLens.id, forKey: "selectedLens")
             clampCaptureSettings()
+            // Live lens switch: reconfigure capture under the running
+            // encoder and connection.
+            if isStreaming {
+                try? camera.configure(lens: selectedLens,
+                                      resolution: resolution,
+                                      fps: Int32(fps))
+                resetCameraControls()
+                encoder?.requestKeyframe()
+                scheduleStateSend()
+            }
         }
     }
     @Published var codec: VideoCodec {
@@ -122,7 +135,8 @@ final class Streamer: ObservableObject {
             "lensPosition": Double(lensPosition),
             "torch": torchOn,
             "hasTorch": camera.hasTorch,
-            "camera": useFrontCamera ? "front" : "back",
+            "camera": selectedLens.position == .front ? "front" : "back",
+            "lens": selectedLens.label,
         ]
     }
 
@@ -148,15 +162,11 @@ final class Streamer: ObservableObject {
     @Published var discoveredServers: [DiscoveryClient.Server] = []
     @Published var cameraPermissionDenied = false
 
-    var cameraPosition: AVCaptureDevice.Position {
-        useFrontCamera ? .front : .back
-    }
-
-    /// Keeps resolution/fps within what the selected camera supports.
+    /// Keeps resolution/fps within what the selected lens supports.
     func clampCaptureSettings() {
         let supported = { (r: CameraManager.Resolution, f: Int) in
             CameraManager.supports(resolution: r, fps: Int32(f),
-                                   position: self.cameraPosition)
+                                   lens: self.selectedLens)
         }
         if supported(resolution, fps) { return }
         if supported(resolution, 30) {
@@ -191,7 +201,11 @@ final class Streamer: ObservableObject {
             rawValue: defaults.string(forKey: "resolution") ?? "") ?? .hd720
         let storedFps = defaults.integer(forKey: "fps")
         fps = storedFps > 0 ? storedFps : 30
-        useFrontCamera = defaults.bool(forKey: "useFrontCamera")
+        let lenses = CameraManager.availableLenses()
+        availableLenses = lenses.isEmpty ? [CameraManager.defaultLens] : lenses
+        let savedLensID = defaults.string(forKey: "selectedLens")
+        selectedLens = availableLenses.first { $0.id == savedLensID }
+            ?? availableLenses[0]
         codec = VideoCodec(rawValue: defaults.string(forKey: "videoCodec") ?? "")
             ?? (VideoEncoder.isSupported(.hevc) ? .hevc : .h264)
         dimWhileStreaming = defaults.object(forKey: "dimWhileStreaming") as? Bool ?? true
@@ -246,20 +260,18 @@ final class Streamer: ObservableObject {
         }
     }
 
-    /// Switches front/back mid-stream if the other camera supports the
-    /// current resolution/fps; reconfigures capture without touching the
-    /// encoder or connection.
+    /// Switches front/back if a lens on the other side supports the
+    /// current resolution/fps (the selectedLens observer reconfigures
+    /// capture mid-stream).
     func flipCamera() {
         let newPosition: AVCaptureDevice.Position =
-            useFrontCamera ? .back : .front
-        guard CameraManager.supports(resolution: resolution, fps: Int32(fps),
-                                     position: newPosition) else { return }
-        useFrontCamera.toggle()
-        guard isStreaming else { return }
-        try? camera.configure(position: cameraPosition,
-                              resolution: resolution, fps: Int32(fps))
-        resetCameraControls()
-        encoder?.requestKeyframe()
+            selectedLens.position == .front ? .back : .front
+        guard let lens = availableLenses.first(where: {
+            $0.position == newPosition &&
+            CameraManager.supports(resolution: resolution, fps: Int32(fps),
+                                   lens: $0)
+        }) else { return }
+        selectedLens = lens
     }
 
     // MARK: - Discovery
@@ -309,7 +321,7 @@ final class Streamer: ObservableObject {
                                    fps: Int32(fps),
                                    bitrate: resolution.bitrate(for: activeCodec))
         do {
-            try camera.configure(position: cameraPosition,
+            try camera.configure(lens: selectedLens,
                                  resolution: resolution,
                                  fps: Int32(fps))
             try encoder.start()

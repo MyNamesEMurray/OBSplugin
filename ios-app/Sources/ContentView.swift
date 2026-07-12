@@ -152,26 +152,30 @@ struct ContentView: View {
         }
     }
 
-    /// Only resolutions this camera actually supports (at any frame rate).
+    /// Only resolutions this lens actually supports (at any frame rate).
     private var availableResolutions: [CameraManager.Resolution] {
         CameraManager.Resolution.allCases.filter {
             CameraManager.supports(resolution: $0, fps: 30,
-                                   position: streamer.cameraPosition)
+                                   lens: streamer.selectedLens)
         }
     }
 
-    /// Only frame rates this camera supports at the chosen resolution.
+    /// Only frame rates this lens supports at the chosen resolution.
     private var availableFrameRates: [Int] {
         [30, 60].filter {
             CameraManager.supports(resolution: streamer.resolution,
                                    fps: Int32($0),
-                                   position: streamer.cameraPosition)
+                                   lens: streamer.selectedLens)
         }
     }
 
     private var cameraSection: some View {
         Section("Camera") {
-            Toggle("Front camera", isOn: $streamer.useFrontCamera)
+            Picker("Lens", selection: $streamer.selectedLens) {
+                ForEach(streamer.availableLenses) { lens in
+                    Text(lens.label).tag(lens)
+                }
+            }
 
             Picker("Resolution", selection: $streamer.resolution) {
                 ForEach(availableResolutions) { resolution in

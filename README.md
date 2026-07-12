@@ -41,9 +41,11 @@ The video appears in the OBS source within a second or two. Disconnecting
   streaming. A legacy phone→OBS mode with LAN discovery is also available.
 - **H.264 or HEVC**, hardware-encoded (HEVC ~40% smaller at the same
   quality; automatic H.264 fallback on devices without HEVC encode)
-- **720p / 1080p / 4K at 30 or 60 fps** — the app reads the camera's real
-  format list (per front/back camera) and only offers combinations the
-  hardware supports
+- **Lens selection** — Main, Ultra Wide, Telephoto, Front: dynamically
+  enumerated from the device's actual cameras, switchable live while
+  streaming (picker in settings, lens menu in the streaming view)
+- **720p / 1080p / 4K at 30 or 60 fps** — the app reads each lens's real
+  format list and only offers combinations the hardware supports
 - **Automatic lip sync**: pick any OBS audio source in the iOS Camera
   properties and the plugin continuously sets its sync offset to the
   measured camera latency (minus a configurable audio-device latency)

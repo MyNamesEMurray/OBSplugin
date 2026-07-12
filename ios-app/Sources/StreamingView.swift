@@ -188,6 +188,25 @@ struct StreamingView: View {
                     }
                 }
 
+                Menu {
+                    ForEach(streamer.availableLenses) { lens in
+                        Button {
+                            touched()
+                            streamer.selectedLens = lens
+                        } label: {
+                            if lens == streamer.selectedLens {
+                                Label(lens.label, systemImage: "checkmark")
+                            } else {
+                                Text(lens.label)
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "camera.aperture")
+                        .padding(8)
+                        .background(.black.opacity(0.5), in: Circle())
+                }
+
                 Button {
                     touched()
                     streamer.flipCamera()
