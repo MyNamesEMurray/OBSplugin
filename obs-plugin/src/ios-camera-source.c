@@ -24,6 +24,7 @@
 #define S_PORT "port"
 #define S_MODE "mode"
 #define S_HOST "host"
+#define S_LOW_LATENCY "low_latency"
 #define MODE_NETWORK "network"
 #define MODE_DIAL "dial"
 #define MODE_USB "usb"
@@ -192,12 +193,109 @@ static void answer_discovery(socket_t sock, int tcp_port)
 
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Latency measurement: NTP-style clock offset between the phone's
+ * capture clock and this machine, then per-frame capture→decode time. */
+
+struct latency_tracker {
+	bool have_offset;
+	int64_t offset_ns;   /* phone_clock - plugin_clock */
+	uint64_t offset_rtt; /* RTT of the sample behind offset_ns */
+	uint64_t offset_time;
+
+	uint64_t sum_ns;
+	uint64_t count;
+	uint64_t min_ns;
+	uint64_t max_ns;
+	uint64_t window_start;
+	uint64_t last_sync_send;
+};
+
+static void latency_on_timesync(struct latency_tracker *t, uint64_t t1,
+				uint64_t t2, uint64_t t3)
+{
+	if (t3 <= t1)
+		return;
+
+	uint64_t rtt = t3 - t1;
+	int64_t offset = (int64_t)t2 - (int64_t)((t1 + t3) / 2);
+
+	/* Prefer low-RTT samples (least asymmetry error), but refresh
+	 * periodically anyway so clock drift can't accumulate. */
+	bool stale = t3 - t->offset_time > 10000000000ULL;
+	if (!t->have_offset || rtt <= t->offset_rtt || stale) {
+		t->have_offset = true;
+		t->offset_ns = offset;
+		t->offset_rtt = rtt;
+		t->offset_time = t3;
+	}
+}
+
+static void latency_on_frame(struct latency_tracker *t, uint64_t pts_phone_ns,
+			     uint64_t now_ns)
+{
+	if (!t->have_offset)
+		return;
+
+	int64_t captured_local =
+		(int64_t)pts_phone_ns - t->offset_ns;
+	int64_t lat = (int64_t)now_ns - captured_local;
+	if (lat < 0)
+		lat = 0;
+
+	uint64_t l = (uint64_t)lat;
+	if (!t->count || l < t->min_ns)
+		t->min_ns = l;
+	if (!t->count || l > t->max_ns)
+		t->max_ns = l;
+	t->sum_ns += l;
+	t->count++;
+	if (!t->window_start)
+		t->window_start = now_ns;
+}
+
 struct client_state {
 	socket_t sock;
 	struct recv_buf buf;
 	struct h264_decoder *decoder;
 	char name[128];
+	struct latency_tracker lat;
 };
+
+/* Once a second, ask the phone for a clock sample; every five, report. */
+static void latency_tick(struct ios_camera_source *s, struct client_state *c)
+{
+	uint64_t now = os_gettime_ns();
+	struct latency_tracker *t = &c->lat;
+
+	if (now - t->last_sync_send > 1000000000ULL) {
+		t->last_sync_send = now;
+		uint8_t hdr[OBSC_HEADER_SIZE];
+		obsc_build_header(hdr, OBSC_PKT_TIMESYNC_REQ, 0, now, 0);
+		/* Best effort; a 20-byte send into an open socket either
+		 * fully succeeds or the connection is toast anyway. */
+		send(c->sock, (const char *)hdr, OBSC_HEADER_SIZE, 0);
+	}
+
+	if (t->count && t->window_start &&
+	    now - t->window_start > 5000000000ULL) {
+		unsigned avg_ms = (unsigned)(t->sum_ns / t->count / 1000000);
+		unsigned min_ms = (unsigned)(t->min_ns / 1000000);
+		unsigned max_ms = (unsigned)(t->max_ns / 1000000);
+		unsigned rtt_ms = (unsigned)(t->offset_rtt / 1000000);
+
+		blog(LOG_INFO,
+		     "[ios-camera] capture->decode latency: avg %u ms "
+		     "(min %u / max %u), link rtt %u ms, %u frames",
+		     avg_ms, min_ms, max_ms, rtt_ms, (unsigned)t->count);
+		set_status(s, "%s %s — ~%u ms", T_("Status.Connected"),
+			   c->name[0] ? c->name : "iOS device", avg_ms);
+
+		t->sum_ns = 0;
+		t->count = 0;
+		t->window_start = now;
+	}
+}
 
 static void client_disconnect(struct ios_camera_source *s,
 			      struct client_state *c)
@@ -281,9 +379,17 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			     "[ios-camera] decoder error, resetting");
 			h264_decoder_destroy(c->decoder);
 			c->decoder = NULL;
+			break;
 		}
+		latency_on_frame(&c->lat, hdr->pts_ns, os_gettime_ns());
 		break;
 	case OBSC_PKT_PING:
+		break;
+	case OBSC_PKT_TIMESYNC_RESP:
+		if (hdr->payload_size >= 8) {
+			latency_on_timesync(&c->lat, obsc_read_u64(payload),
+					    hdr->pts_ns, os_gettime_ns());
+		}
 		break;
 	default:
 		blog(LOG_WARNING, "[ios-camera] unknown packet type %d",
@@ -429,6 +535,7 @@ static void dial_loop(struct ios_camera_source *s)
 			int ret = select((int)sock + 1, &fds, NULL, NULL, &tv);
 			if (ret < 0)
 				break;
+			latency_tick(s, &client);
 			if (ret == 0)
 				continue;
 			if (!client_read(s, &client))
@@ -476,6 +583,10 @@ static void network_loop(struct ios_camera_source *s)
 		int ret = select((int)max_fd + 1, &fds, NULL, NULL, &tv);
 		if (ret < 0)
 			break;
+
+		if (client.sock != OBSC_INVALID_SOCKET)
+			latency_tick(s, &client);
+
 		if (ret == 0)
 			continue;
 
@@ -572,6 +683,11 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 		parse_mode(obs_data_get_string(settings, S_MODE));
 	const char *host = obs_data_get_string(settings, S_HOST);
 
+	/* Unbuffered async video: render the newest frame immediately
+	 * instead of letting OBS smooth timestamps with a frame queue. */
+	obs_source_set_async_unbuffered(
+		s->source, obs_data_get_bool(settings, S_LOW_LATENCY));
+
 	if (port != s->port || mode != s->conn_mode ||
 	    strcmp(host, s->host) != 0) {
 		stop_thread(s);
@@ -590,6 +706,8 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	s->conn_mode = parse_mode(obs_data_get_string(settings, S_MODE));
 	snprintf(s->host, sizeof(s->host), "%s",
 		 obs_data_get_string(settings, S_HOST));
+	obs_source_set_async_unbuffered(
+		source, obs_data_get_bool(settings, S_LOW_LATENCY));
 
 	pthread_mutex_init(&s->status_mutex, NULL);
 	dstr_init(&s->status);
@@ -613,6 +731,7 @@ static void ios_camera_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_PORT, OBSC_DEFAULT_PORT);
 	obs_data_set_default_string(settings, S_MODE, MODE_DIAL);
 	obs_data_set_default_string(settings, S_HOST, "");
+	obs_data_set_default_bool(settings, S_LOW_LATENCY, true);
 }
 
 static bool mode_modified(obs_properties_t *props, obs_property_t *property,
@@ -645,6 +764,7 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 
 	obs_properties_add_text(props, S_HOST, T_("Host"), OBS_TEXT_DEFAULT);
 	obs_properties_add_int(props, S_PORT, T_("Port"), 1024, 65535, 1);
+	obs_properties_add_bool(props, S_LOW_LATENCY, T_("LowLatency"));
 
 	obs_property_t *status = obs_properties_add_text(
 		props, "status_info", T_("Status"), OBS_TEXT_INFO);

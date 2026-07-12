@@ -18,6 +18,10 @@ enum OBSCProtocol {
         case videoConfig = 2
         case video = 3
         case ping = 4
+        /// Latency clock sync: plugin sends REQ with its clock in pts;
+        /// we echo that in the RESP payload with our clock in pts.
+        case timesyncReq = 5
+        case timesyncResp = 6
     }
 
     struct Flags: OptionSet {

@@ -56,6 +56,20 @@ be monotonic; OBS re-bases async timestamps itself.
 Optional keep-alive, empty payload, sent by the client every ~2 s while idle.
 The server ignores it.
 
+### 5 — TIMESYNC_REQ (plugin → app)
+Empty payload; `pts` = the plugin's monotonic clock (t1, nanoseconds).
+Sent about once a second while connected.
+
+### 6 — TIMESYNC_RESP (app → plugin)
+Sent immediately upon receiving a TIMESYNC_REQ. `pts` = the device's
+host clock (t2) — the **same clock domain as video frame timestamps** —
+and the payload is the echoed 8-byte big-endian t1.
+
+The plugin computes, NTP-style, with t3 = its clock at receipt:
+`rtt = t3 - t1`, `offset = t2 - (t1 + t3)/2` (phone clock minus plugin
+clock, error ≤ rtt/2). Per-frame capture→decode latency is then
+`now - (frame_pts - offset)`, logged and shown in the source status.
+
 ## USB transport
 
 The packet protocol is identical over USB; only the transport roles flip.

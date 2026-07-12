@@ -28,6 +28,11 @@ enum obsc_packet_type {
 	OBSC_PKT_VIDEO_CONFIG = 2,
 	OBSC_PKT_VIDEO = 3,
 	OBSC_PKT_PING = 4,
+	/* Clock sync for latency measurement: plugin sends REQ with its
+	 * clock in pts; app echoes it in the RESP payload with its own
+	 * clock in pts. */
+	OBSC_PKT_TIMESYNC_REQ = 5,
+	OBSC_PKT_TIMESYNC_RESP = 6,
 };
 
 #define OBSC_FLAG_KEYFRAME 0x0001
@@ -54,6 +59,41 @@ static inline uint32_t obsc_read_u32(const uint8_t *p)
 static inline uint64_t obsc_read_u64(const uint8_t *p)
 {
 	return (uint64_t)obsc_read_u32(p) << 32 | obsc_read_u32(p + 4);
+}
+
+static inline void obsc_write_u16(uint8_t *p, uint16_t v)
+{
+	p[0] = (uint8_t)(v >> 8);
+	p[1] = (uint8_t)v;
+}
+
+static inline void obsc_write_u32(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)(v >> 24);
+	p[1] = (uint8_t)(v >> 16);
+	p[2] = (uint8_t)(v >> 8);
+	p[3] = (uint8_t)v;
+}
+
+static inline void obsc_write_u64(uint8_t *p, uint64_t v)
+{
+	obsc_write_u32(p, (uint32_t)(v >> 32));
+	obsc_write_u32(p + 4, (uint32_t)v);
+}
+
+static inline void obsc_build_header(uint8_t *buf, uint8_t type,
+				     uint16_t flags, uint64_t pts_ns,
+				     uint32_t payload_size)
+{
+	buf[0] = 'O';
+	buf[1] = 'B';
+	buf[2] = 'S';
+	buf[3] = 'C';
+	buf[4] = OBSC_PROTOCOL_VERSION;
+	buf[5] = type;
+	obsc_write_u16(buf + 6, flags);
+	obsc_write_u64(buf + 8, pts_ns);
+	obsc_write_u32(buf + 16, payload_size);
 }
 
 /* Parses a 20-byte header. Returns false on bad magic/version/size. */
