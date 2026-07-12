@@ -1,185 +1,124 @@
 # OBS iOS Camera
 
-Use your iPhone or iPad camera as a webcam **directly inside OBS Studio** —
-no virtual camera drivers, no RTMP server, just your local network.
+Use your iPhone or iPad as a high-quality camera **directly inside OBS
+Studio** — over Wi-Fi or a USB cable. No virtual-camera drivers, no RTMP
+server, no monthly subscription.
 
-Two components:
+It comes in two parts: an **OBS plugin** (adds an "iOS Camera" source) and
+the **OBSCam iPhone/iPad app**. You install both, then OBS connects to your
+phone.
 
-| Component | Path | What it does |
-|-----------|------|--------------|
-| **OBS plugin** (`iOS Camera` source) | [`obs-plugin/`](obs-plugin/) | Connects to the phone (LAN IP or USB via usbmuxd), decodes the incoming H.264/HEVC stream with FFmpeg (GPU when available), and renders it as a normal OBS video source. |
-| **iOS app** (`OBSCam`) | [`ios-app/`](ios-app/) | Captures the camera with AVFoundation, hardware-encodes with VideoToolbox, and serves the stream to the plugin over TCP (port 9979 on the device). |
+## What you need
 
-```
-┌────────────── iPhone ───────────────┐         ┌─────────── Computer ────────────┐
-│ AVCaptureSession → VideoToolbox     │   TCP   │ plugin dials the phone (LAN IP  │
-│ H.264/HEVC → Annex B → NWListener   │ ◀────── │ or USB via usbmuxd) → decode →  │
-│ (port 9979 on the device)           │ ──────▶ │ obs_source_output_video()       │
-└─────────────────────────────────────┘  video  └─────────────────────────────────┘
-```
+- **OBS Studio 32** or newer, on Windows, macOS, or Linux.
+- An **iPhone or iPad on iOS/iPadOS 15 or later**.
+- For **USB**: iTunes installed on Windows (it provides Apple's device
+  driver); nothing extra on macOS.
+- To install the app: a Mac with Xcode, **or** a Windows/Mac sideloading
+  tool such as [Sideloadly](https://sideloadly.io) and a free Apple ID.
 
-## Quick start
+## Install
 
-1. **Install the plugin** — grab the Windows zip or Linux tarball from the
-   [Releases](../../releases) page (Windows: extract into
-   `C:\Program Files\obs-studio\`; Linux: into
-   `~/.config/obs-studio/plugins/`). Or build from source:
-   [`obs-plugin/BUILDING.md`](obs-plugin/BUILDING.md).
-2. **Install the iOS app** — download `OBSCam-unsigned.ipa` from Releases
-   and sideload it with [Sideloadly](https://sideloadly.io) (free Apple ID,
-   re-sign weekly), or build with Xcode:
-   [`ios-app/BUILDING.md`](ios-app/BUILDING.md).
-3. On the phone: open OBSCam, pick camera/resolution/frame rate, and tap
-   **Start** — the app shows the phone's IP address.
-4. In OBS: *Sources → + → iOS Camera*, enter that IP as the **Phone IP**
-   (or plug in a USB cable and pick Connection → **USB cable** — no Wi-Fi
-   needed). OBS connects to the phone within a couple of seconds.
+**1. The OBS plugin.** Download the build for your system from the
+[Releases](../../releases) page:
 
-The video appears in the OBS source within a second or two. Disconnecting
-(or backgrounding the app) blanks the source.
+- **Windows** — unzip `ios-camera-source-windows-x64.zip` into
+  `C:\Program Files\obs-studio\` (merge the `obs-plugins` and `data`
+  folders), then restart OBS.
+- **Linux** — extract `ios-camera-source-linux-x86_64.tar.gz` into
+  `~/.config/obs-studio/plugins/`.
+- **macOS / building yourself** — see
+  [`obs-plugin/BUILDING.md`](obs-plugin/BUILDING.md).
+
+**2. The OBSCam app.** Download `OBSCam-unsigned.ipa` from
+[Releases](../../releases) and install it with
+[Sideloadly](https://sideloadly.io) using a free Apple ID (the app then
+needs re-signing about once a week — a limitation of free Apple accounts).
+Or build it yourself with Xcode: [`ios-app/BUILDING.md`](ios-app/BUILDING.md).
+
+## Connect
+
+1. On the phone, open **OBSCam**, choose your camera/resolution/frame rate,
+   and tap **Start**. The app shows the phone's IP address.
+2. In OBS, add a source: **Sources → + → iOS Camera**.
+3. Point it at your phone:
+   - **Wi-Fi** — enter the IP the app shows as the **Phone IP**. (Phone and
+     computer must be on the same network.)
+   - **USB** — connect the cable, set **Connection → USB cable**. No
+     network needed, and the phone charges while streaming.
+
+The video appears within a second or two. Closing or backgrounding the app
+blanks the source.
 
 ## Features
 
-- **Wi-Fi or USB**: OBS connects to the phone — enter the IP the app shows
-  (no inbound firewall rules on the PC), or use the Lightning/USB-C cable
-  via Apple's device mux (usbmuxd; on Windows install iTunes). USB needs
-  no network at all and charges the phone while streaming.
-- **Multiple devices**: add one "iOS Camera" source per phone. Wi-Fi
-  sources each use their own IP; USB sources either **auto-distribute**
-  across attached phones (one per source) or can be **pinned to a specific
-  device** (by its stable UDID) so the same phone maps to the same source
-  across replugs and reboots. Two sources aimed at the *same* device are
-  prevented from fighting over it — the second reports it's in use.
-- **H.264 or HEVC**, hardware-encoded (HEVC ~40% smaller at the same
-  quality; automatic H.264 fallback on devices without HEVC encode)
-- **Lens selection** — Main, Ultra Wide, Telephoto, Front: dynamically
-  enumerated from the device's actual cameras, switchable live while
-  streaming (picker in settings, lens menu in the streaming view)
-- **720p / 1080p / 4K at 30 or 60 fps** — the app reads each lens's real
-  format list and only offers combinations the hardware supports
-- **Automatic lip sync**: pick any OBS audio source in the iOS Camera
-  properties and the plugin continuously sets its sync offset to the
-  measured camera latency (minus a configurable audio-device latency).
-  With **Auto-calibrate** on (plus "Auto lip-sync reference" in the app),
-  the plugin sends the phone mic purely as a timing reference and
-  cross-correlates it against your real microphone to measure that mic's
-  latency directly — fully automatic, no manual entry. The phone audio is
-  never played out. When the mic is *faster* than the video the audio is
-  delayed to match; when the mic is *slower* (e.g. a buffered audio
-  interface), enabling **Auto video delay** delays the video instead — so
-  either direction is corrected automatically.
-- **Adaptive bitrate**: when the link congests, the app backs the encoder
-  off within a second and recovers gradually — no more latency spirals on
-  weak Wi-Fi
-- **Full-screen streaming UI** with pinch zoom, tap-to-focus, exposure
-  bias, focus lock (AF/manual lens position), torch, camera flip, and
-  battery-saving auto-dim
-- **Remote camera control from the PC**: the plugin serves a control panel
-  at http://localhost:9980 (zoom / exposure / focus / torch / flip) that
-  drives the phone over the stream connection
-- Mirrored front-camera preview
-- Reconnect-friendly: keyframes every 2 s carry SPS/PPS, so OBS can join or
-  recover mid-stream
-- Cross-platform plugin (Linux / macOS / Windows), plain C against libobs +
-  FFmpeg
+- **Wi-Fi or USB.** USB needs no network at all, is lower-latency, and
+  charges the phone as you stream.
+- **Up to 4K at 60 fps**, in **H.264 or HEVC** (HEVC looks the same at
+  ~40% less data). The app only offers resolution/frame-rate combinations
+  your specific camera supports.
+- **Pick any lens** — Main, Ultra Wide, Telephoto, or Front — switchable
+  live while you stream.
+- **Multiple cameras.** Add one "iOS Camera" source per phone. On USB you
+  can pin a source to a specific device so the same phone always maps to
+  the same source.
+- **Live camera controls**, both on the phone (full-screen view with pinch
+  zoom, tap-to-focus, exposure, focus lock, flashlight, camera flip) and
+  **from your computer** via a browser panel at
+  `http://localhost:9980` (zoom / exposure / focus / flashlight / flip).
+- **Automatic lip sync.** The plugin measures the camera's latency and can
+  automatically line up a separate microphone with the video — no guessing
+  at delay values. (See "Lip sync" below.)
+- **Smooth on weak Wi-Fi.** If the connection congests, the app lowers
+  quality briefly and recovers, instead of piling up latency.
+- **Battery saver.** While streaming, the phone screen dims after a few
+  seconds; tap to wake it.
 
-## Repository layout
+## Lip sync
 
-```
-obs-plugin/            C plugin for OBS Studio (CMake)
-  src/protocol.h       wire-protocol constants + header parsing
-  src/ios-camera-source.c   the OBS source: dial loop, latency, lip sync
-  src/h264-decoder.c   libavcodec H.264/HEVC → obs_source_frame (GPU-capable)
-  src/usbmux.c         usbmuxd client (USB transport)
-  src/web-control.c    browser control panel (http://localhost:9980)
-  src/lipsync.c        audio cross-correlation for lip-sync calibration
-ios-app/               SwiftUI companion app (XcodeGen project)
-  Sources/VideoEncoder.swift  VideoToolbox encode + AVCC→Annex B
-  Sources/StreamClient.swift  Network.framework listener + framing
-  Sources/AudioReference.swift  mic capture for lip-sync reference
-  Sources/StreamingView.swift full-screen streaming UI + camera controls
-docs/PROTOCOL.md       wire protocol specification (version 1)
-```
+Streamers usually use their own microphone, not the phone's. The plugin can
+line that mic up with the video automatically:
 
-## Protocol
+1. In the iOS Camera source properties, pick your microphone under
+   **Lip-sync audio source** and enable **Auto-calibrate**.
+2. In the app, turn on **Auto lip-sync reference**.
 
-A tiny length-prefixed packet protocol over one TCP connection (video is
-H.264 Annex B access units; timestamps in nanoseconds). Full spec in
-[`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+The phone then sends its microphone purely as a *timing reference* (never
+heard on stream); the plugin compares it with your real mic to measure the
+exact offset and correct it. If your mic is *slower* than the video (some
+USB audio interfaces are), enable **Auto video delay** and it delays the
+video to match instead.
 
 ## Latency
 
-The plugin continuously measures **capture→decode latency** (camera
-timestamp on the phone to decoded frame in OBS) using NTP-style clock sync
-over the stream connection — accurate to about half the link round-trip
-(±1–2 ms). It's reported every 5 s in the OBS log
-(`[ios-camera] capture->decode latency: …`) and in the source's Status
-field (reopen Properties to refresh).
+Over USB you can expect roughly **60 ms** from the camera to OBS at 1080p
+or 4K; Wi-Fi is a little higher and more variable. The plugin shows a live
+latency figure in the source's Status field and the OBS log.
 
-That figure excludes OBS's own render/compositing and your display. For
-true glass-to-glass, point the phone at a millisecond stopwatch on your
-monitor and screenshot the OBS preview next to the stopwatch — the
-difference is the real end-to-end number.
+A few things already minimize it: GPU-accelerated decoding, low-latency
+decode settings, and dropping (rather than queuing) frames when the link
+stalls. **USB is the most consistent** and immune to Wi-Fi hiccups. For the
+lowest possible delay, use USB and good lighting (brighter scenes let the
+camera expose faster).
 
-Low-latency defaults: the source renders the newest frame immediately
-("Low latency mode" checkbox, on by default — turn it off if you prefer
-smoother pacing over minimum delay), decoding runs on the GPU when
-available (D3D11VA on Windows, VideoToolbox on macOS, VAAPI on Linux;
-automatic software fallback, toggleable via "Hardware decoding"), the
-encoder prioritizes speed with no frame reordering, and the app drops
-rather than queues frames when the link stalls. USB mode
-typically shaves a few more milliseconds over Wi-Fi and is immune to
-Wi-Fi jitter.
+## Tips & troubleshooting
 
-## Releases
+- **USB device not found (Windows):** make sure iTunes is installed — it
+  provides the driver the plugin needs — and tap **Trust** on the phone
+  when prompted.
+- **The app stops working after a week:** free Apple IDs expire sideloaded
+  apps every 7 days. Re-install it with Sideloadly to refresh; your
+  settings are kept.
+- **Two sources, same phone:** one phone can feed one source. A second
+  source aimed at the same device will say it's already in use — point it
+  at a different phone or remove it.
+- **Wi-Fi latency spikes when zoomed in:** heavy digital zoom is harder to
+  compress; use the Telephoto lens for clean magnification, or switch to
+  USB.
+- The stream is unencrypted on your local network — intended for trusted
+  home/studio networks.
 
-Releases are **automatic**: every push to `main` that touches
-`obs-plugin/` or `ios-app/` gets a version tag and a published GitHub
-Release with ready-to-install builds (Windows plugin zip, Linux plugin
-tarball, unsigned IPA).
+## Contributing
 
-Version bumps are controlled by a **git trailer** — a line by itself in
-any commit of the merged PR (case-insensitive):
-
-| Trailer line          | Bump   | Example           |
-|-----------------------|--------|-------------------|
-| *(none)*              | patch  | v0.3.0 → v0.3.1   |
-| `Release-Bump: minor` | minor  | v0.3.0 → v0.4.0   |
-| `Release-Bump: major` | major  | v0.3.0 → v1.0.0   |
-| `Release-Skip: true`  | none   | no release        |
-
-A trailer must be on its own line, so merely mentioning the keywords in
-prose can't trigger a bump.
-
-Manual releases still work too — push any `v*` tag:
-
-```bash
-git tag v0.3.0 && git push origin v0.3.0
-```
-
-PRs merge automatically once the required **Build** checks pass, via the
-repository's branch-protection rules on `main` (Settings → Branches).
-Because the release pipeline runs on the merge to `main`, a green build is
-required before anything ships.
-
-## Continuous integration
-
-Every push/PR runs [`.github/workflows/build.yml`](.github/workflows/build.yml):
-
-- **OBS plugin** — built on Ubuntu against libobs + FFmpeg with
-  `-Wall -Wextra -Werror`; the compiled `ios-camera-source.so` (plus its
-  `data/` folder) is uploaded as a downloadable artifact on each run.
-- **iOS app** — the Xcode project is generated with XcodeGen and compiled
-  for the iOS Simulator on a macOS runner. This validates the Swift code but
-  does not produce an installable app: iOS device builds must be signed, so
-  installing on your phone still goes through Xcode with your Apple ID (see
-  `ios-app/BUILDING.md`). To ship signed builds from CI later, add an Apple
-  signing certificate + provisioning profile as repo secrets and a
-  `fastlane`/`xcodebuild -exportArchive` step.
-
-## Limitations & roadmap
-
-- Video only — microphone audio is a natural next step (`OBSC_PKT_AUDIO`).
-- One connected device per source.
-- The stream is unencrypted on your LAN; intended for trusted home/studio
-  networks.
+Architecture, the wire protocol, and the build/release setup are documented
+in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
