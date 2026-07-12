@@ -3,11 +3,14 @@ name: Auto Release
 # Every push to main that touches plugin or app code automatically gets a
 # version tag and a published release with installable builds.
 #
-# Version bumping (from the merge/commit message):
-#   default            -> patch  (v0.2.0 -> v0.2.1)
-#   contains "#minor"  -> minor  (v0.2.1 -> v0.3.0)
-#   contains "#major"  -> major  (v0.3.0 -> v1.0.0)
-#   contains "[skip release]" -> no release
+# The bump is a deliberate **git trailer** — a line, in any commit of the
+# merged PR, that is EXACTLY one of these (case-insensitive):
+#   Release-Bump: minor   -> minor (v0.3.0 -> v0.4.0)
+#   Release-Bump: major   -> major (v0.3.0 -> v1.0.0)
+#   (none)                -> patch (v0.3.0 -> v0.3.1)
+#   Release-Skip: true    -> no release
+# A trailer must be its own line, so merely *writing about* the keywords in
+# prose can never trigger a bump (that mistake shipped v1.0.0 once).
 on:
   push:
     branches: ["main"]
@@ -22,7 +25,6 @@ jobs:
   version:
     name: Tag next version
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip release]')"
     outputs:
       tag: ${{ steps.bump.outputs.tag }}
     steps:
@@ -41,18 +43,25 @@ jobs:
           version=${latest#v}
           IFS=. read -r major minor patch <<< "$version"
 
-          # Scan every commit newly pushed to main (the merge commit AND the
-          # PR's own commits), so a '#minor'/'#major' keyword in a PR commit
-          # message counts — the merge commit rarely carries it.
+          # Every commit newly pushed to main (the merge commit AND the PR's
+          # own commits), so a trailer in any PR commit counts.
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             messages=$(git log -1 --format=%B "$AFTER")
           else
             messages=$(git log --format=%B "$BEFORE..$AFTER")
           fi
 
-          if grep -q '#major' <<< "$messages"; then
+          # Trailers only match on their own line (^…$), so prose that
+          # merely mentions the keywords is ignored.
+          if grep -qiE '^Release-Skip:[[:space:]]*true[[:space:]]*$' <<< "$messages"; then
+            echo "Release-Skip trailer found — no release."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if grep -qiE '^Release-Bump:[[:space:]]*major[[:space:]]*$' <<< "$messages"; then
             major=$((major + 1)); minor=0; patch=0
-          elif grep -q '#minor' <<< "$messages"; then
+          elif grep -qiE '^Release-Bump:[[:space:]]*minor[[:space:]]*$' <<< "$messages"; then
             minor=$((minor + 1)); patch=0
           else
             patch=$((patch + 1))
@@ -67,6 +76,7 @@ jobs:
   release:
     name: Build & publish
     needs: version
+    if: needs.version.outputs.tag != ''
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.version.outputs.tag }}

@@ -1,8 +1,9 @@
 name: Build
 
+# CI validation runs on PRs only. A push to main is already validated (the
+# PR built the identical code), and the release workflow rebuilds + ships
+# the artifacts — so building again on the main push would be pure waste.
 on:
-  push:
-    branches: ["main", "claude/**"]
   pull_request:
   workflow_dispatch:
 

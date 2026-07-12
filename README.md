@@ -129,14 +129,18 @@ Releases are **automatic**: every push to `main` that touches
 Release with ready-to-install builds (Windows plugin zip, Linux plugin
 tarball, unsigned IPA).
 
-Version bumps are controlled by the merge-commit message:
+Version bumps are controlled by a **git trailer** — a line by itself in
+any commit of the merged PR (case-insensitive):
 
-| Message contains  | Bump   | Example           |
-|-------------------|--------|-------------------|
-| *(nothing special)* | patch | v0.2.0 → v0.2.1 |
-| `#minor`          | minor  | v0.2.1 → v0.3.0   |
-| `#major`          | major  | v0.3.0 → v1.0.0   |
-| `[skip release]`  | none   | no release        |
+| Trailer line          | Bump   | Example           |
+|-----------------------|--------|-------------------|
+| *(none)*              | patch  | v0.3.0 → v0.3.1   |
+| `Release-Bump: minor` | minor  | v0.3.0 → v0.4.0   |
+| `Release-Bump: major` | major  | v0.3.0 → v1.0.0   |
+| `Release-Skip: true`  | none   | no release        |
+
+A trailer must be on its own line, so merely mentioning the keywords in
+prose can't trigger a bump.
 
 Manual releases still work too — push any `v*` tag:
 
