@@ -24,6 +24,7 @@ struct ContentView: View {
             .navigationTitle("OBSCam")
         }
         .navigationViewStyle(.stack)
+        .tint(Theme.accent)
     }
 
     private var optionsSection: some View {
@@ -44,27 +45,13 @@ struct ContentView: View {
 
     private var statusSection: some View {
         Section {
-            HStack {
+            HStack(spacing: Theme.Space.m) {
                 Circle()
-                    .fill(statusColor)
+                    .fill(streamer.status.tint)
                     .frame(width: 10, height: 10)
-                Text(statusText)
+                Text(streamer.status.displayName)
                     .font(.callout)
             }
-        }
-    }
-
-    private var statusText: String {
-        streamer.status == .connecting ? "Waiting for OBS to connect…"
-                                       : streamer.status.label
-    }
-
-    private var statusColor: Color {
-        switch streamer.status {
-        case .idle: return .gray
-        case .connecting: return .yellow
-        case .streaming: return .green
-        case .error: return .red
         }
     }
 
@@ -155,10 +142,15 @@ struct ContentView: View {
                 Task { await streamer.start() }
             } label: {
                 Label("Start streaming to OBS", systemImage: "video.fill")
+                    .font(.body.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
 
-            if streamer.cameraPermissionDenied {
+            if streamer.cameraPermissionDenied || streamer.micPermissionDenied {
                 Button("Open Settings") {
                     if let url = URL(string: UIApplication.openSettingsURLString) {
                         UIApplication.shared.open(url)

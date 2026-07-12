@@ -97,67 +97,51 @@ struct StreamingView: View {
     }
 
     private var statusBar: some View {
-        HStack {
-            HStack(spacing: 6) {
+        HStack(spacing: Theme.Space.m) {
+            HStack(spacing: Theme.Space.s) {
                 Circle()
-                    .fill(streamer.status == .streaming ? Color.green : Color.yellow)
+                    .fill(streamer.status.tint)
                     .frame(width: 8, height: 8)
-                Text(streamer.status == .streaming ? "Live" : streamer.status.label)
+                Text(streamer.status.displayName)
                     .font(.footnote.bold())
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.black.opacity(0.5), in: Capsule())
+            .glassPill()
 
             Spacer()
 
-            Button {
+            ControlButton(systemImage: "moon.fill") {
                 touched()
                 dim()
-            } label: {
-                Image(systemName: "moon.fill")
-                    .padding(10)
-                    .background(.black.opacity(0.5), in: Circle())
             }
 
-            Button(role: .destructive) {
+            Button {
                 streamer.stop()
             } label: {
                 Image(systemName: "stop.fill")
-                    .padding(10)
-                    .background(.red.opacity(0.8), in: Circle())
+                    .font(.system(size: 18, weight: .medium))
+                    .frame(width: Theme.controlButton, height: Theme.controlButton)
+                    .background(Theme.errorRed.opacity(0.9), in: Circle())
             }
         }
-        .foregroundColor(.white)
+        .foregroundColor(Theme.textPrimary)
     }
 
     private var controlPanel: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Image(systemName: "minus.magnifyingglass")
-                Slider(value: $streamer.zoom,
-                       in: 1...max(streamer.camera.maxZoomFactor, 1.1)) { editing in
-                    if editing { touched() }
-                }
-                Image(systemName: "plus.magnifyingglass")
-                Text(String(format: "%.1f×", streamer.zoom))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 40)
-            }
+        VStack(spacing: Theme.Space.m) {
+            sliderRow(minIcon: "minus.magnifyingglass",
+                      maxIcon: "plus.magnifyingglass",
+                      value: $streamer.zoom,
+                      range: 1...max(streamer.camera.maxZoomFactor, 1.1),
+                      readout: String(format: "%.1f×", streamer.zoom))
 
-            HStack {
-                Image(systemName: "sun.min")
-                Slider(value: $streamer.exposureBias,
-                       in: streamer.camera.exposureBiasRange) { editing in
-                    if editing { touched() }
-                }
-                Image(systemName: "sun.max")
-                Text(String(format: "%+.1f", streamer.exposureBias))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 40)
-            }
+            sliderRow(minIcon: "sun.min",
+                      maxIcon: "sun.max",
+                      value: floatBinding($streamer.exposureBias),
+                      range: exposureRange,
+                      readout: String(format: "%+.1f", streamer.exposureBias))
 
-            HStack(spacing: 10) {
+            HStack(spacing: Theme.Space.m) {
                 Picker("Focus", selection: $streamer.focusSetting) {
                     Text("AF").tag(Streamer.FocusSetting.auto)
                     Text("Lock").tag(Streamer.FocusSetting.locked)
@@ -167,24 +151,23 @@ struct StreamingView: View {
                 .onChange(of: streamer.focusSetting) { _ in touched() }
 
                 if streamer.focusSetting == .locked {
-                    Slider(value: $streamer.lensPosition, in: 0...1) { editing in
+                    Slider(value: floatBinding($streamer.lensPosition),
+                           in: 0...1) { editing in
                         if editing { touched() }
                     }
                 } else {
-                    Text("Tap the preview to focus")
+                    Text("Tap to focus")
                         .font(.caption)
-                        .foregroundColor(.gray)
+                        .foregroundColor(Theme.textSecondary)
                     Spacer()
                 }
 
                 if streamer.camera.hasTorch {
-                    Button {
+                    ControlButton(systemImage: streamer.torchOn
+                                    ? "bolt.fill" : "bolt.slash",
+                                  active: streamer.torchOn) {
                         touched()
                         streamer.torchOn.toggle()
-                    } label: {
-                        Image(systemName: streamer.torchOn ? "bolt.fill" : "bolt.slash")
-                            .padding(8)
-                            .background(.black.opacity(0.5), in: Circle())
                     }
                 }
 
@@ -203,22 +186,51 @@ struct StreamingView: View {
                     }
                 } label: {
                     Image(systemName: "camera.aperture")
-                        .padding(8)
-                        .background(.black.opacity(0.5), in: Circle())
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(Theme.textPrimary)
+                        .frame(width: Theme.controlButton,
+                               height: Theme.controlButton)
+                        .background(Theme.glassChip, in: Circle())
                 }
 
-                Button {
+                ControlButton(
+                    systemImage: "arrow.triangle.2.circlepath.camera") {
                     touched()
                     streamer.flipCamera()
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath.camera")
-                        .padding(8)
-                        .background(.black.opacity(0.5), in: Circle())
                 }
             }
         }
-        .padding(14)
-        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 16))
-        .foregroundColor(.white)
+        .tint(Theme.accent)
+        .glassPanel()
+        .foregroundColor(Theme.textPrimary)
+    }
+
+    /// Shared zoom/exposure slider row: leading icon · slider · trailing
+    /// icon · monospaced readout (docs/UI_DESIGN.md §4).
+    private func sliderRow(minIcon: String, maxIcon: String,
+                           value: Binding<CGFloat>,
+                           range: ClosedRange<CGFloat>,
+                           readout: String) -> some View {
+        HStack(spacing: Theme.Space.m) {
+            Image(systemName: minIcon)
+            Slider(value: value, in: range) { editing in
+                if editing { touched() }
+            }
+            Image(systemName: maxIcon)
+            Text(readout)
+                .font(.caption.monospacedDigit())
+                .frame(width: 44, alignment: .trailing)
+        }
+    }
+
+    private var exposureRange: ClosedRange<CGFloat> {
+        let r = streamer.camera.exposureBiasRange
+        return CGFloat(r.lowerBound)...CGFloat(r.upperBound)
+    }
+
+    /// Bridges a Float model value to the CGFloat sliders.
+    private func floatBinding(_ source: Binding<Float>) -> Binding<CGFloat> {
+        Binding(get: { CGFloat(source.wrappedValue) },
+                set: { source.wrappedValue = Float($0) })
     }
 }

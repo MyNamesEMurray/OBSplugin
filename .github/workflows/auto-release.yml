@@ -33,16 +33,26 @@ jobs:
       - name: Compute and push tag
         id: bump
         env:
-          MESSAGE: ${{ github.event.head_commit.message }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
         run: |
           latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
           latest=${latest:-v0.1.0}
           version=${latest#v}
           IFS=. read -r major minor patch <<< "$version"
 
-          if grep -q '#major' <<< "$MESSAGE"; then
+          # Scan every commit newly pushed to main (the merge commit AND the
+          # PR's own commits), so a '#minor'/'#major' keyword in a PR commit
+          # message counts — the merge commit rarely carries it.
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            messages=$(git log -1 --format=%B "$AFTER")
+          else
+            messages=$(git log --format=%B "$BEFORE..$AFTER")
+          fi
+
+          if grep -q '#major' <<< "$messages"; then
             major=$((major + 1)); minor=0; patch=0
-          elif grep -q '#minor' <<< "$MESSAGE"; then
+          elif grep -q '#minor' <<< "$messages"; then
             minor=$((minor + 1)); patch=0
           else
             patch=$((patch + 1))

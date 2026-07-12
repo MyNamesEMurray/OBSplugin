@@ -12,12 +12,24 @@ final class Streamer: ObservableObject {
         case streaming
         case error(String)
 
-        var label: String {
+        /// The single canonical status word/phrase used by every surface
+        /// (see docs/UI_DESIGN.md §2).
+        var displayName: String {
             switch self {
             case .idle: return "Not connected"
-            case .connecting: return "Connecting…"
-            case .streaming: return "Streaming to OBS"
+            case .connecting: return "Waiting for OBS…"
+            case .streaming: return "Live"
             case .error(let message): return message
+            }
+        }
+
+        /// The status dot/label colour from the shared palette.
+        var tint: Color {
+            switch self {
+            case .idle: return Theme.idleGrey
+            case .connecting: return Theme.connectAmber
+            case .streaming: return Theme.liveGreen
+            case .error: return Theme.errorRed
             }
         }
     }
@@ -123,6 +135,7 @@ final class Streamer: ObservableObject {
             "hasTorch": camera.hasTorch,
             "camera": selectedLens.position == .front ? "front" : "back",
             "lens": selectedLens.label,
+            "lenses": availableLenses.map { $0.label },
         ]
     }
 
@@ -237,6 +250,13 @@ final class Streamer: ObservableObject {
             }
         case "flip":
             flipCamera()
+        case "selectLens":
+            if let label = command["label"] as? String,
+               let lens = availableLenses.first(where: { $0.label == label }),
+               CameraManager.supports(resolution: resolution,
+                                      fps: Int32(fps), lens: lens) {
+                selectedLens = lens
+            }
         default:
             break
         }

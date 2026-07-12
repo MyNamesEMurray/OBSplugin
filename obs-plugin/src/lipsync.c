@@ -191,6 +191,7 @@ bool lipsync_estimate(struct lipsync *ls, int64_t *mic_delay_ns,
 
 	double best = -1e30;
 	int best_lag = 0;
+	bool found = false;
 	/* score(lag) = sum p[i] * m[i+lag]; peaks at lag == mic delay. */
 	for (int lag = -MAX_LAG_FRAMES; lag <= MAX_LAG_FRAMES; lag++) {
 		double dot = 0, norm_m = 0;
@@ -203,15 +204,19 @@ bool lipsync_estimate(struct lipsync *ls, int64_t *mic_delay_ns,
 		if (norm_m < MIN_ENERGY)
 			continue;
 		double ncc = dot / sqrt(norm_p * norm_m);
-		if (ncc > best) {
+		if (!found || ncc > best) {
 			best = ncc;
 			best_lag = lag;
+			found = true;
 		}
 	}
 
 	free(p);
 	free(m);
 
+	/* No lag had usable mic energy (mic silent): no estimate. */
+	if (!found)
+		return false;
 	/* A peak pinned to the search edge means the true lag is outside the
 	 * window — don't trust it. */
 	if (best_lag <= -MAX_LAG_FRAMES || best_lag >= MAX_LAG_FRAMES)
