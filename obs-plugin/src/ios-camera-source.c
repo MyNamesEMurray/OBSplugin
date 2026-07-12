@@ -1,10 +1,10 @@
 /*
  * "iOS Camera" async video source.
  *
- * Runs a small TCP server on a background thread. The iOS companion app
- * connects and streams H.264 access units (Annex B) which are decoded with
- * libavcodec and handed to OBS via obs_source_output_video(). A UDP
- * responder on port+1 answers LAN discovery probes from the app.
+ * A background thread connects to the companion app on the device — over
+ * the LAN (phone IP entered in properties) or through usbmuxd (USB cable)
+ * — and receives H.264/HEVC access units (Annex B), decoded via
+ * libavcodec (GPU when available) into obs_source_output_video().
  */
 
 #include <obs-module.h>
@@ -24,7 +24,6 @@
 
 #define WEB_CONTROL_PORT 9980
 
-#define S_PORT "port"
 #define S_MODE "mode"
 #define S_HOST "host"
 #define S_LOW_LATENCY "low_latency"
@@ -33,14 +32,12 @@
 #define S_AUDIO_SYNC "audio_sync_enabled"
 #define S_AUDIO_LATENCY "audio_device_latency_ms"
 #define S_WEB_CONTROL "web_control"
-#define MODE_NETWORK "network"
 #define MODE_DIAL "dial"
 #define MODE_USB "usb"
 #define T_(s) obs_module_text(s)
 
 enum connection_mode {
-	CONN_LISTEN,   /* phone dials OBS (legacy) */
-	CONN_DIAL_NET, /* OBS dials the phone over the LAN (recommended) */
+	CONN_DIAL_NET, /* OBS dials the phone over the LAN */
 	CONN_DIAL_USB, /* OBS dials the phone through usbmuxd */
 };
 
@@ -59,7 +56,6 @@ struct ios_camera_source {
 	bool thread_active;
 	volatile bool stop;
 
-	int port;
 	enum connection_mode conn_mode;
 	char host[128];
 	volatile bool hw_decode;
@@ -90,11 +86,10 @@ struct ios_camera_source {
 
 static enum connection_mode parse_mode(const char *mode)
 {
-	if (strcmp(mode, MODE_DIAL) == 0)
-		return CONN_DIAL_NET;
 	if (strcmp(mode, MODE_USB) == 0)
 		return CONN_DIAL_USB;
-	return CONN_LISTEN;
+	/* Includes configs saved by the removed phone-dials-OBS mode. */
+	return CONN_DIAL_NET;
 }
 
 /* ------------------------------------------------------------------ */
@@ -178,83 +173,6 @@ static void recv_buf_consume(struct recv_buf *b, size_t size)
 }
 
 /* ------------------------------------------------------------------ */
-
-static socket_t open_tcp_listener(int port)
-{
-	socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (sock == OBSC_INVALID_SOCKET)
-		return sock;
-
-	int yes = 1;
-	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes,
-		   sizeof(yes));
-
-	struct sockaddr_in addr = {0};
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons((uint16_t)port);
-
-	if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
-	    listen(sock, 1) != 0) {
-		net_close(sock);
-		return OBSC_INVALID_SOCKET;
-	}
-
-	net_set_nonblocking(sock);
-	return sock;
-}
-
-static socket_t open_discovery_socket(int port)
-{
-	socket_t sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock == OBSC_INVALID_SOCKET)
-		return sock;
-
-	int yes = 1;
-	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes,
-		   sizeof(yes));
-
-	struct sockaddr_in addr = {0};
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons((uint16_t)(port + OBSC_DISCOVERY_PORT_OFFSET));
-
-	if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-		net_close(sock);
-		return OBSC_INVALID_SOCKET;
-	}
-
-	net_set_nonblocking(sock);
-	return sock;
-}
-
-static void answer_discovery(socket_t sock, int tcp_port)
-{
-	char probe[64];
-	struct sockaddr_in from = {0};
-	socklen_t from_len = sizeof(from);
-
-	int n = (int)recvfrom(sock, probe, sizeof(probe) - 1, 0,
-			      (struct sockaddr *)&from, &from_len);
-	if (n <= 0)
-		return;
-	probe[n] = 0;
-
-	if (strncmp(probe, OBSC_DISCOVER_REQUEST,
-		    strlen(OBSC_DISCOVER_REQUEST)) != 0)
-		return;
-
-	char host[128] = "OBS";
-	gethostname(host, sizeof(host) - 1);
-	host[sizeof(host) - 1] = 0;
-
-	char reply[192];
-	snprintf(reply, sizeof(reply), OBSC_DISCOVER_REPLY_PREFIX "%d:%s",
-		 tcp_port, host);
-
-	sendto(sock, reply, (int)strlen(reply), 0, (struct sockaddr *)&from,
-	       from_len);
-}
 
 /* ------------------------------------------------------------------ */
 
@@ -476,7 +394,7 @@ static void client_disconnect(struct ios_camera_source *s,
 	pthread_mutex_lock(&s->status_mutex);
 	s->device_state[0] = 0;
 	pthread_mutex_unlock(&s->status_mutex);
-	set_status(s, "%s (%d)", T_("Status.Listening"), s->port);
+	set_status(s, "%s", T_("Status.Disconnected"));
 }
 
 static void extract_json_string(const char *json, const char *key, char *out,
@@ -753,104 +671,13 @@ static void dial_loop(struct ios_camera_source *s)
 	}
 }
 
-static void network_loop(struct ios_camera_source *s)
-{
-	socket_t listener = open_tcp_listener(s->port);
-	socket_t discovery = open_discovery_socket(s->port);
-	struct client_state client = {.sock = OBSC_INVALID_SOCKET};
-
-	if (listener == OBSC_INVALID_SOCKET) {
-		blog(LOG_ERROR, "[ios-camera] failed to listen on port %d",
-		     s->port);
-		set_status(s, "%s (%d)", T_("Status.PortError"), s->port);
-	} else {
-		blog(LOG_INFO, "[ios-camera] listening on port %d", s->port);
-		set_status(s, "%s (%d)", T_("Status.Listening"), s->port);
-	}
-
-	while (!s->stop && listener != OBSC_INVALID_SOCKET) {
-		fd_set fds;
-		FD_ZERO(&fds);
-		FD_SET(listener, &fds);
-		socket_t max_fd = listener;
-
-		if (discovery != OBSC_INVALID_SOCKET) {
-			FD_SET(discovery, &fds);
-			if (discovery > max_fd)
-				max_fd = discovery;
-		}
-		if (client.sock != OBSC_INVALID_SOCKET) {
-			FD_SET(client.sock, &fds);
-			if (client.sock > max_fd)
-				max_fd = client.sock;
-		}
-
-		struct timeval tv = {.tv_sec = 0, .tv_usec = 200 * 1000};
-		int ret = select((int)max_fd + 1, &fds, NULL, NULL, &tv);
-		if (ret < 0)
-			break;
-
-		if (client.sock != OBSC_INVALID_SOCKET) {
-			latency_tick(s, &client);
-			control_tick(s, &client);
-		}
-
-		if (ret == 0)
-			continue;
-
-		if (discovery != OBSC_INVALID_SOCKET &&
-		    FD_ISSET(discovery, &fds))
-			answer_discovery(discovery, s->port);
-
-		if (FD_ISSET(listener, &fds)) {
-			struct sockaddr_in from;
-			socklen_t from_len = sizeof(from);
-			socket_t accepted = accept(
-				listener, (struct sockaddr *)&from, &from_len);
-			if (accepted != OBSC_INVALID_SOCKET) {
-				/* Newest connection wins; drop the old one. */
-				if (client.sock != OBSC_INVALID_SOCKET) {
-					blog(LOG_INFO,
-					     "[ios-camera] replacing existing connection");
-					client_disconnect(s, &client);
-				}
-				net_set_nonblocking(accepted);
-				int yes = 1;
-				setsockopt(accepted, IPPROTO_TCP, TCP_NODELAY,
-					   (const char *)&yes, sizeof(yes));
-				client.sock = accepted;
-				set_status(s, "%s", T_("Status.Connected"));
-			}
-		}
-
-		if (client.sock != OBSC_INVALID_SOCKET &&
-		    FD_ISSET(client.sock, &fds)) {
-			if (!client_read(s, &client)) {
-				blog(LOG_INFO,
-				     "[ios-camera] client disconnected");
-				client_disconnect(s, &client);
-			}
-		}
-	}
-
-	if (client.sock != OBSC_INVALID_SOCKET)
-		client_disconnect(s, &client);
-	if (listener != OBSC_INVALID_SOCKET)
-		net_close(listener);
-	if (discovery != OBSC_INVALID_SOCKET)
-		net_close(discovery);
-}
-
 static void *server_thread(void *data)
 {
 	struct ios_camera_source *s = data;
 
 	os_set_thread_name("ios-camera-server");
 
-	if (s->conn_mode == CONN_LISTEN)
-		network_loop(s);
-	else
-		dial_loop(s);
+	dial_loop(s);
 
 	return NULL;
 }
@@ -886,7 +713,6 @@ static const char *ios_camera_get_name(void *unused)
 static void ios_camera_update(void *data, obs_data_t *settings)
 {
 	struct ios_camera_source *s = data;
-	int port = (int)obs_data_get_int(settings, S_PORT);
 	enum connection_mode mode =
 		parse_mode(obs_data_get_string(settings, S_MODE));
 	const char *host = obs_data_get_string(settings, S_HOST);
@@ -931,10 +757,8 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 		}
 	}
 
-	if (port != s->port || mode != s->conn_mode ||
-	    strcmp(host, s->host) != 0) {
+	if (mode != s->conn_mode || strcmp(host, s->host) != 0) {
 		stop_thread(s);
-		s->port = port;
 		s->conn_mode = mode;
 		snprintf(s->host, sizeof(s->host), "%s", host);
 		start_thread(s);
@@ -945,7 +769,6 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct ios_camera_source *s = bzalloc(sizeof(*s));
 	s->source = source;
-	s->port = (int)obs_data_get_int(settings, S_PORT);
 	s->conn_mode = parse_mode(obs_data_get_string(settings, S_MODE));
 	snprintf(s->host, sizeof(s->host), "%s",
 		 obs_data_get_string(settings, S_HOST));
@@ -982,7 +805,6 @@ static void ios_camera_destroy(void *data)
 
 static void ios_camera_get_defaults(obs_data_t *settings)
 {
-	obs_data_set_default_int(settings, S_PORT, OBSC_DEFAULT_PORT);
 	obs_data_set_default_string(settings, S_MODE, MODE_DIAL);
 	obs_data_set_default_string(settings, S_HOST, "");
 	obs_data_set_default_bool(settings, S_LOW_LATENCY, true);
@@ -1012,8 +834,6 @@ static bool mode_modified(obs_properties_t *props, obs_property_t *property,
 		parse_mode(obs_data_get_string(settings, S_MODE));
 	obs_property_set_visible(obs_properties_get(props, S_HOST),
 				 mode == CONN_DIAL_NET);
-	obs_property_set_visible(obs_properties_get(props, S_PORT),
-				 mode == CONN_LISTEN);
 	return true;
 }
 
@@ -1028,11 +848,9 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 		OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(mode, T_("Mode.Dial"), MODE_DIAL);
 	obs_property_list_add_string(mode, T_("Mode.USB"), MODE_USB);
-	obs_property_list_add_string(mode, T_("Mode.Network"), MODE_NETWORK);
 	obs_property_set_modified_callback(mode, mode_modified);
 
 	obs_properties_add_text(props, S_HOST, T_("Host"), OBS_TEXT_DEFAULT);
-	obs_properties_add_int(props, S_PORT, T_("Port"), 1024, 65535, 1);
 	obs_properties_add_bool(props, S_LOW_LATENCY, T_("LowLatency"));
 	obs_properties_add_bool(props, S_HW_DECODE, T_("HwDecode"));
 

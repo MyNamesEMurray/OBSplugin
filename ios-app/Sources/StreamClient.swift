@@ -2,20 +2,14 @@ import Foundation
 import Network
 import UIKit
 
-/// Sends protocol packets to the OBS plugin over one of two transports:
-/// - dial: TCP client to the plugin's listener (Wi-Fi mode)
-/// - listen: TCP server the plugin dials through usbmuxd (USB mode)
+/// TCP server the OBS plugin dials — over the LAN (phone IP) or through
+/// usbmuxd (USB cable). Frames and sends protocol packets to the plugin.
 final class StreamClient {
     enum State: Equatable {
         case disconnected
         case connecting
         case connected
         case failed(String)
-    }
-
-    enum TransportMode {
-        case dial(host: String, port: UInt16)
-        case listen(port: UInt16)
     }
 
     var onStateChange: ((State) -> Void)?
@@ -46,20 +40,12 @@ final class StreamClient {
 
     // MARK: - Lifecycle
 
-    func start(_ mode: TransportMode) {
-        // Clean up any previous transport *silently* — announcing a state
-        // change here would make every (re)connect look like a fresh drop
-        // to the Streamer, which then schedules another reconnect: an
-        // endless 2-second connect/teardown loop.
+    func start(port: UInt16) {
+        // Clean up any previous transport *silently* — a state change
+        // here would look like a fresh drop to the Streamer.
         teardownConnection()
         teardownListener()
-
-        switch mode {
-        case .dial(let host, let port):
-            dial(host: host, port: port)
-        case .listen(let port):
-            listen(on: port)
-        }
+        listen(on: port)
     }
 
     func disconnect() {
@@ -93,19 +79,6 @@ final class StreamClient {
             tcpOptions.connectionTimeout = 5
         }
         return params
-    }
-
-    private func dial(host: String, port: UInt16) {
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            state = .failed("Invalid port")
-            return
-        }
-
-        let connection = NWConnection(host: NWEndpoint.Host(host),
-                                      port: nwPort,
-                                      using: Self.tcpParameters())
-        state = .connecting
-        adopt(connection)
     }
 
     private func listen(on port: UInt16) {
@@ -172,18 +145,12 @@ final class StreamClient {
         connection.start(queue: queue)
     }
 
-    /// The active connection dropped. In listen mode we stay up and wait
-    /// for the peer to dial back; in dial mode we report the drop.
+    /// The active connection dropped; the listener stays up so the
+    /// plugin can dial back in.
     private func connectionEnded(failure: String?) {
         teardownConnection()
         receiveBuffer.removeAll()
-        if listener != nil {
-            state = .connecting
-        } else if let failure {
-            state = .failed(failure)
-        } else {
-            state = .disconnected
-        }
+        state = listener != nil ? .connecting : .disconnected
     }
 
     private func receiveLoop(on connection: NWConnection) {

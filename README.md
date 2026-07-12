@@ -7,8 +7,8 @@ Two components:
 
 | Component | Path | What it does |
 |-----------|------|--------------|
-| **OBS plugin** (`iOS Camera` source) | [`obs-plugin/`](obs-plugin/) | Listens on TCP port 9977, decodes the incoming H.264 stream with FFmpeg, and renders it as a normal OBS video source. Also answers LAN discovery probes on UDP 9978. |
-| **iOS app** (`OBSCam`) | [`ios-app/`](ios-app/) | Captures the camera with AVFoundation, hardware-encodes to H.264 with VideoToolbox, and streams it to the plugin over TCP. |
+| **OBS plugin** (`iOS Camera` source) | [`obs-plugin/`](obs-plugin/) | Connects to the phone (LAN IP or USB via usbmuxd), decodes the incoming H.264/HEVC stream with FFmpeg (GPU when available), and renders it as a normal OBS video source. |
+| **iOS app** (`OBSCam`) | [`ios-app/`](ios-app/) | Captures the camera with AVFoundation, hardware-encodes with VideoToolbox, and serves the stream to the plugin over TCP (port 9979 on the device). |
 
 ```
 ┌─────────────── iPhone ───────────────┐        ┌──────────── Computer ────────────┐
@@ -35,10 +35,9 @@ The video appears in the OBS source within a second or two. Disconnecting
 ## Features
 
 - **Wi-Fi or USB**: OBS connects to the phone — enter the IP the app shows
-  (DroidCam-style; no inbound firewall rules on the PC), or use the
-  Lightning/USB-C cable via Apple's device mux (usbmuxd; on Windows install
-  iTunes). USB needs no network at all and charges the phone while
-  streaming. A legacy phone→OBS mode with LAN discovery is also available.
+  (no inbound firewall rules on the PC), or use the Lightning/USB-C cable
+  via Apple's device mux (usbmuxd; on Windows install iTunes). USB needs
+  no network at all and charges the phone while streaming.
 - **H.264 or HEVC**, hardware-encoded (HEVC ~40% smaller at the same
   quality; automatic H.264 fallback on devices without HEVC encode)
 - **Lens selection** — Main, Ultra Wide, Telephoto, Front: dynamically

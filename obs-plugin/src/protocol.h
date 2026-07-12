@@ -13,15 +13,9 @@
 #define OBSC_HEADER_SIZE 20
 #define OBSC_MAX_PAYLOAD (16u * 1024u * 1024u)
 
-#define OBSC_DEFAULT_PORT 9977
-#define OBSC_DISCOVERY_PORT_OFFSET 1
-
-/* In USB mode the app listens on this port on the device; the plugin
- * dials it through usbmuxd. */
+/* The app listens on this port on the device; the plugin dials it over
+ * the LAN or through usbmuxd (USB). */
 #define OBSC_USB_PORT 9979
-
-#define OBSC_DISCOVER_REQUEST "OBSC_DISCOVER"
-#define OBSC_DISCOVER_REPLY_PREFIX "OBSC_HERE:"
 
 enum obsc_packet_type {
 	OBSC_PKT_HELLO = 1,

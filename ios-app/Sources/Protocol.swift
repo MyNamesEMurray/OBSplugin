@@ -5,13 +5,9 @@ enum OBSCProtocol {
     static let magic: [UInt8] = [0x4F, 0x42, 0x53, 0x43] // "OBSC"
     static let version: UInt8 = 1
     static let headerSize = 20
-    static let defaultPort: UInt16 = 9977
-    static let discoveryPortOffset: UInt16 = 1
-    /// In USB mode the app listens on this port; the OBS plugin dials it
-    /// through usbmuxd (the cable).
+    /// The app listens on this port; the OBS plugin dials it over the
+    /// LAN or through usbmuxd (USB cable).
     static let usbPort: UInt16 = 9979
-    static let discoverRequest = "OBSC_DISCOVER"
-    static let discoverReplyPrefix = "OBSC_HERE:"
 
     enum PacketType: UInt8 {
         case hello = 1

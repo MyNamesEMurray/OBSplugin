@@ -22,27 +22,7 @@ final class Streamer: ObservableObject {
         }
     }
 
-    enum ConnectionMode: String, CaseIterable, Identifiable {
-        /// The app listens; OBS connects to the phone — over the LAN
-        /// (enter the phone's IP in OBS) or over the USB cable. Recommended.
-        case receive
-        /// Legacy: the app dials OBS's listener (IP of the computer).
-        case dial
-
-        var id: String { rawValue }
-        var label: String { self == .receive ? "OBS → iPhone" : "iPhone → OBS" }
-    }
-
     // Settings (persisted to UserDefaults)
-    @Published var connectionMode: ConnectionMode {
-        didSet { UserDefaults.standard.set(connectionMode.rawValue, forKey: "connectionMode") }
-    }
-    @Published var host: String {
-        didSet { UserDefaults.standard.set(host, forKey: "host") }
-    }
-    @Published var portText: String {
-        didSet { UserDefaults.standard.set(portText, forKey: "port") }
-    }
     @Published var resolution: CameraManager.Resolution {
         didSet { UserDefaults.standard.set(resolution.rawValue, forKey: "resolution") }
     }
@@ -159,7 +139,6 @@ final class Streamer: ObservableObject {
     // State
     @Published private(set) var status: Status = .idle
     @Published private(set) var isStreaming = false
-    @Published var discoveredServers: [DiscoveryClient.Server] = []
     @Published var cameraPermissionDenied = false
 
     /// Keeps resolution/fps within what the selected lens supports.
@@ -189,14 +168,9 @@ final class Streamer: ObservableObject {
     let camera = CameraManager()
     private var encoder: VideoEncoder?
     private let client = StreamClient()
-    private let discovery = DiscoveryClient()
 
     init() {
         let defaults = UserDefaults.standard
-        connectionMode = ConnectionMode(
-            rawValue: defaults.string(forKey: "connectionMode") ?? "") ?? .receive
-        host = defaults.string(forKey: "host") ?? ""
-        portText = defaults.string(forKey: "port") ?? "\(OBSCProtocol.defaultPort)"
         resolution = CameraManager.Resolution(
             rawValue: defaults.string(forKey: "resolution") ?? "") ?? .hd720
         let storedFps = defaults.integer(forKey: "fps")
@@ -213,11 +187,6 @@ final class Streamer: ObservableObject {
         client.onStateChange = { [weak self] state in
             Task { @MainActor [weak self] in
                 self?.handleClientState(state)
-            }
-        }
-        discovery.onServersChanged = { [weak self] servers in
-            Task { @MainActor [weak self] in
-                self?.discoveredServers = servers
             }
         }
         client.onControl = { [weak self] json in
@@ -279,18 +248,6 @@ final class Streamer: ObservableObject {
         selectedLens = lens
     }
 
-    // MARK: - Discovery
-
-    func refreshServers() {
-        discoveredServers = []
-        discovery.start()
-    }
-
-    func select(_ server: DiscoveryClient.Server) {
-        host = server.host
-        portText = "\(server.port)"
-    }
-
     // MARK: - Streaming lifecycle
 
     func start() async {
@@ -300,20 +257,6 @@ final class Streamer: ObservableObject {
             cameraPermissionDenied = true
             status = .error("Camera access denied — enable it in Settings")
             return
-        }
-
-        let trimmedHost = host.trimmingCharacters(in: .whitespaces)
-        var dialPort: UInt16 = OBSCProtocol.defaultPort
-        if connectionMode == .dial {
-            guard !trimmedHost.isEmpty else {
-                status = .error("Enter the IP address of the computer running OBS")
-                return
-            }
-            guard let port = UInt16(portText), port >= 1024 else {
-                status = .error("Invalid port")
-                return
-            }
-            dialPort = port
         }
 
         // Fall back to H.264 automatically if this device can't encode HEVC.
@@ -343,7 +286,6 @@ final class Streamer: ObservableObject {
         }
         self.encoder = encoder
 
-        reconnectAttempts = 0
         isStreaming = true
         status = .connecting
         UIApplication.shared.isIdleTimerDisabled = true
@@ -351,12 +293,7 @@ final class Streamer: ObservableObject {
         camera.start()
         resetCameraControls()
         startAdaptiveBitrate(target: resolution.bitrate(for: activeCodec))
-        switch connectionMode {
-        case .dial:
-            client.start(.dial(host: trimmedHost, port: dialPort))
-        case .receive:
-            client.start(.listen(port: OBSCProtocol.usbPort))
-        }
+        client.start(port: OBSCProtocol.usbPort)
     }
 
     /// Adaptive bitrate: back off quickly when the link drops frames,
@@ -414,16 +351,10 @@ final class Streamer: ObservableObject {
         encoder = nil
     }
 
-    private var reconnectAttempts = 0
-    private var reconnectPending = false
-    private static let maxReconnectAttempts = 5
-
     private func handleClientState(_ state: StreamClient.State) {
         guard isStreaming else { return }
         switch state {
         case .connected:
-            reconnectAttempts = 0
-            reconnectPending = false
             status = .streaming
             let size = resolution.size
             client.sendVideoConfig(codec: encoder?.codec ?? codec,
@@ -433,51 +364,14 @@ final class Streamer: ObservableObject {
             // and seed the remote UI with the current control state.
             encoder?.requestKeyframe()
             client.sendState(controlStateSnapshot())
-        case .failed, .disconnected:
-            // In receive mode the client keeps its listener alive and
-            // reports .connecting while waiting for OBS to dial back;
-            // .failed there means the listener itself died — fatal.
-            if connectionMode == .receive {
-                if case .failed(let message) = state {
-                    status = .error(message)
-                    stopKeepingError()
-                } else {
-                    status = .connecting
-                }
-            } else {
-                scheduleReconnect(after: state)
-            }
-        case .connecting:
-            status = .connecting
-        }
-    }
-
-    /// Retry a dropped connection a few times before giving up — keeps a
-    /// momentary Wi-Fi hiccup from ending the stream.
-    private func scheduleReconnect(after state: StreamClient.State) {
-        guard !reconnectPending else { return }
-        guard reconnectAttempts < Self.maxReconnectAttempts else {
-            if case .failed(let message) = state {
-                status = .error(message)
-            } else {
-                status = .error("Disconnected from OBS")
-            }
+        case .failed(let message):
+            // The client keeps its listener alive across connection drops
+            // and reports .connecting; .failed means the listener itself
+            // died — fatal.
+            status = .error(message)
             stopKeepingError()
-            return
-        }
-        reconnectAttempts += 1
-        reconnectPending = true
-        status = .connecting
-
-        let host = self.host.trimmingCharacters(in: .whitespaces)
-        let port = UInt16(portText) ?? OBSCProtocol.defaultPort
-
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let self, self.isStreaming else { return }
-            self.reconnectPending = false
-            self.encoder?.requestKeyframe()
-            self.client.start(.dial(host: host, port: port))
+        case .disconnected, .connecting:
+            status = .connecting
         }
     }
 

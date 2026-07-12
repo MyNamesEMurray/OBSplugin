@@ -69,8 +69,5 @@ Copy `build\Release\ios-camera-source.dll` to
 ## Verifying
 
 Start OBS → *Sources* → **+** → **iOS Camera**. The properties dialog shows
-the listen port (default 9977) and connection status. Check the OBS log for
-`[ios-camera] listening on port 9977`.
-
-Firewall note: the plugin listens on TCP 9977 and UDP 9978 (discovery) —
-allow OBS through the firewall for the local network.
+the connection settings and status. No inbound firewall rules are needed —
+the plugin makes outbound connections to the phone.
