@@ -21,6 +21,7 @@
 #include "h264-decoder.h"
 #include "usbmux.h"
 #include "web-control.h"
+#include "lipsync.h"
 
 #define WEB_CONTROL_PORT 9980
 
@@ -31,6 +32,7 @@
 #define S_AUDIO_SOURCE "audio_sync_source"
 #define S_AUDIO_SYNC "audio_sync_enabled"
 #define S_AUDIO_LATENCY "audio_device_latency_ms"
+#define S_AUTO_CALIBRATE "audio_auto_calibrate"
 #define S_WEB_CONTROL "web_control"
 #define MODE_DIAL "dial"
 #define MODE_USB "usb"
@@ -65,6 +67,16 @@ struct ios_camera_source {
 	char audio_source[256];
 	int64_t applied_audio_offset;
 	int audio_device_latency_ms;
+	bool auto_calibrate;
+	int64_t last_video_latency_ns; /* avg capture->decode, for the offset */
+
+	/* Auto lip-sync cross-correlator. `lipsync` is fed by the network
+	 * thread (reference) and the OBS audio thread (mic capture callback),
+	 * so it has its own lock. `hooked_audio` is the source we registered
+	 * the capture callback on (to unregister later). */
+	struct lipsync *lipsync;
+	pthread_mutex_t lipsync_mutex;
+	obs_weak_source_t *hooked_audio;
 
 	/* Remote-control commands queued for the device (JSON strings),
 	 * pushed by the web control thread, drained by the stream thread.
@@ -247,6 +259,109 @@ struct client_state {
 	struct latency_tracker lat;
 };
 
+/* ------------------------------------------------------------------ */
+/* Auto lip-sync: tap the chosen mic source and cross-correlate it with the
+ * phone's reference audio to measure the mic's true latency. */
+
+static void mic_audio_callback(void *param, obs_source_t *source,
+			       const struct audio_data *audio, bool muted)
+{
+	struct ios_camera_source *s = param;
+	UNUSED_PARAMETER(source);
+
+	if (muted || !audio->frames || !audio->data[0])
+		return;
+
+	uint32_t rate = audio_output_get_sample_rate(obs_get_audio());
+	const float *mono = (const float *)audio->data[0];
+
+	pthread_mutex_lock(&s->lipsync_mutex);
+	if (s->lipsync)
+		lipsync_add_mic(s->lipsync, mono, audio->frames, rate,
+				audio->timestamp);
+	pthread_mutex_unlock(&s->lipsync_mutex);
+}
+
+static void unhook_audio(struct ios_camera_source *s)
+{
+	if (!s->hooked_audio)
+		return;
+	obs_source_t *src = obs_weak_source_get_source(s->hooked_audio);
+	if (src) {
+		obs_source_remove_audio_capture_callback(
+			src, mic_audio_callback, s);
+		obs_source_release(src);
+	}
+	obs_weak_source_release(s->hooked_audio);
+	s->hooked_audio = NULL;
+}
+
+static void hook_audio(struct ios_camera_source *s, const char *name)
+{
+	unhook_audio(s);
+	if (!name || !name[0])
+		return;
+	obs_source_t *src = obs_get_source_by_name(name);
+	if (!src)
+		return;
+	obs_source_add_audio_capture_callback(src, mic_audio_callback, s);
+	s->hooked_audio = obs_source_get_weak_source(src);
+	obs_source_release(src);
+}
+
+/* Cross-correlation result drives the offset: delay the mic by the video
+ * latency minus the mic's own measured latency. Holds the last value when
+ * confidence is low (silence). */
+static void apply_auto_calibrated(struct ios_camera_source *s,
+				  int64_t video_latency_ns)
+{
+	char name[256];
+
+	pthread_mutex_lock(&s->status_mutex);
+	bool enabled = s->audio_sync && s->auto_calibrate;
+	snprintf(name, sizeof(name), "%s", s->audio_source);
+	int64_t applied = s->applied_audio_offset;
+	pthread_mutex_unlock(&s->status_mutex);
+
+	if (!enabled || !name[0])
+		return;
+
+	int64_t mic_delay = 0;
+	double conf = 0;
+	pthread_mutex_lock(&s->lipsync_mutex);
+	bool ok = s->lipsync &&
+		  lipsync_estimate(s->lipsync, &mic_delay, &conf);
+	pthread_mutex_unlock(&s->lipsync_mutex);
+	if (!ok)
+		return;
+
+	int64_t offset = video_latency_ns - mic_delay;
+	if (offset < 0)
+		offset = 0;
+
+	int64_t diff = offset - applied;
+	if (diff < 0)
+		diff = -diff;
+	if (diff < 5000000)
+		return;
+
+	obs_source_t *audio = obs_get_source_by_name(name);
+	if (!audio)
+		return;
+	obs_source_set_sync_offset(audio, offset);
+	obs_source_release(audio);
+
+	pthread_mutex_lock(&s->status_mutex);
+	s->applied_audio_offset = offset;
+	pthread_mutex_unlock(&s->status_mutex);
+
+	blog(LOG_INFO,
+	     "[ios-camera] auto lip-sync: mic %d ms, video %d ms -> "
+	     "offset %d ms (conf %.2f)",
+	     (int)(mic_delay / 1000000), (int)(video_latency_ns / 1000000),
+	     (int)(offset / 1000000), conf);
+}
+
 /*
  * Lip sync: keep the chosen OBS audio source's sync offset equal to the
  * measured camera latency, so audio is delayed to match the video.
@@ -366,8 +481,20 @@ static void latency_tick(struct ios_camera_source *s, struct client_state *c)
 		 * chasing it would yank the mic delay around. */
 		bool stable = (t->max_ns - t->min_ns) < 60000000ULL &&
 			      t->offset_rtt < 50000000ULL;
-		if (stable)
-			apply_audio_sync(s, (int64_t)(t->sum_ns / t->count));
+		if (stable) {
+			int64_t avg = (int64_t)(t->sum_ns / t->count);
+			pthread_mutex_lock(&s->status_mutex);
+			s->last_video_latency_ns = avg;
+			bool auto_cal = s->auto_calibrate;
+			pthread_mutex_unlock(&s->status_mutex);
+
+			/* Auto-calibrate measures the mic latency directly;
+			 * the manual path assumes a fixed device latency. */
+			if (auto_cal)
+				apply_auto_calibrated(s, avg);
+			else
+				apply_audio_sync(s, avg);
+		}
 
 		t->sum_ns = 0;
 		t->count = 0;
@@ -514,6 +641,29 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 					    hdr->pts_ns, os_gettime_ns());
 		}
 		break;
+	case OBSC_PKT_AUDIO: {
+		pthread_mutex_lock(&s->status_mutex);
+		bool want = s->auto_calibrate;
+		pthread_mutex_unlock(&s->status_mutex);
+		/* Need the phone->plugin clock offset to place the reference
+		 * on our timeline; skip until timesync has locked. */
+		if (!want || !c->lat.have_offset)
+			break;
+		int64_t plugin_time =
+			(int64_t)hdr->pts_ns - c->lat.offset_ns;
+		if (plugin_time < 0)
+			break;
+		/* Payload is S16LE PCM; header starts each packet 2-aligned. */
+		const int16_t *pcm = (const int16_t *)payload;
+		size_t samples = hdr->payload_size / 2;
+		pthread_mutex_lock(&s->lipsync_mutex);
+		if (s->lipsync)
+			lipsync_add_reference(s->lipsync, pcm, samples,
+					      OBSC_AUDIO_SAMPLE_RATE,
+					      (uint64_t)plugin_time);
+		pthread_mutex_unlock(&s->lipsync_mutex);
+		break;
+	}
 	default:
 		blog(LOG_WARNING, "[ios-camera] unknown packet type %d",
 		     hdr->type);
@@ -732,13 +882,31 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 	s->audio_sync = obs_data_get_bool(settings, S_AUDIO_SYNC);
 	s->audio_device_latency_ms =
 		(int)obs_data_get_int(settings, S_AUDIO_LATENCY);
+	s->auto_calibrate = obs_data_get_bool(settings, S_AUTO_CALIBRATE);
 	snprintf(s->audio_source, sizeof(s->audio_source), "%s",
 		 obs_data_get_string(settings, S_AUDIO_SOURCE));
 	bool still_syncing = s->audio_sync &&
 			     strcmp(old_source, s->audio_source) == 0;
 	if (!still_syncing)
 		s->applied_audio_offset = 0;
+	bool want_hook =
+		s->audio_sync && s->auto_calibrate && s->audio_source[0];
+	char hook_name[256];
+	snprintf(hook_name, sizeof(hook_name), "%s", s->audio_source);
 	pthread_mutex_unlock(&s->status_mutex);
+
+	/* Manage the mic capture hook for auto-calibration. */
+	bool was_hooked = s->hooked_audio != NULL;
+	bool source_changed = strcmp(old_source, hook_name) != 0;
+	if (want_hook && (!was_hooked || source_changed)) {
+		hook_audio(s, hook_name);
+		pthread_mutex_lock(&s->lipsync_mutex);
+		if (s->lipsync)
+			lipsync_reset(s->lipsync);
+		pthread_mutex_unlock(&s->lipsync_mutex);
+	} else if (!want_hook && was_hooked) {
+		unhook_audio(s);
+	}
 
 	bool web = obs_data_get_bool(settings, S_WEB_CONTROL);
 	if (web && !s->web)
@@ -769,6 +937,14 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct ios_camera_source *s = bzalloc(sizeof(*s));
 	s->source = source;
+
+	/* Init locks/state before anything that might use them (the web
+	 * thread reads status; the audio callback reads lipsync). */
+	pthread_mutex_init(&s->status_mutex, NULL);
+	pthread_mutex_init(&s->lipsync_mutex, NULL);
+	dstr_init(&s->status);
+	s->lipsync = lipsync_create();
+
 	s->conn_mode = parse_mode(obs_data_get_string(settings, S_MODE));
 	snprintf(s->host, sizeof(s->host), "%s",
 		 obs_data_get_string(settings, S_HOST));
@@ -778,13 +954,14 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	s->audio_sync = obs_data_get_bool(settings, S_AUDIO_SYNC);
 	s->audio_device_latency_ms =
 		(int)obs_data_get_int(settings, S_AUDIO_LATENCY);
+	s->auto_calibrate = obs_data_get_bool(settings, S_AUTO_CALIBRATE);
 	snprintf(s->audio_source, sizeof(s->audio_source), "%s",
 		 obs_data_get_string(settings, S_AUDIO_SOURCE));
+
+	if (s->audio_sync && s->auto_calibrate && s->audio_source[0])
+		hook_audio(s, s->audio_source);
 	if (obs_data_get_bool(settings, S_WEB_CONTROL))
 		s->web = web_control_start(s, WEB_CONTROL_PORT);
-
-	pthread_mutex_init(&s->status_mutex, NULL);
-	dstr_init(&s->status);
 
 	start_thread(s);
 	return s;
@@ -795,10 +972,13 @@ static void ios_camera_destroy(void *data)
 	struct ios_camera_source *s = data;
 
 	web_control_stop(s->web);
+	unhook_audio(s);
 	stop_thread(s);
 	for (int i = 0; i < s->control_count; i++)
 		bfree(s->control_queue[i]);
+	lipsync_destroy(s->lipsync);
 	dstr_free(&s->status);
+	pthread_mutex_destroy(&s->lipsync_mutex);
 	pthread_mutex_destroy(&s->status_mutex);
 	bfree(s);
 }
@@ -812,6 +992,7 @@ static void ios_camera_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, S_AUDIO_SYNC, false);
 	obs_data_set_default_string(settings, S_AUDIO_SOURCE, "");
 	obs_data_set_default_int(settings, S_AUDIO_LATENCY, 0);
+	obs_data_set_default_bool(settings, S_AUTO_CALIBRATE, false);
 	obs_data_set_default_bool(settings, S_WEB_CONTROL, true);
 }
 
@@ -860,6 +1041,7 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 	obs_property_list_add_string(audio_list, T_("AudioSource.None"), "");
 	obs_enum_sources(add_audio_source, audio_list);
 	obs_properties_add_bool(props, S_AUDIO_SYNC, T_("AudioSync"));
+	obs_properties_add_bool(props, S_AUTO_CALIBRATE, T_("AutoCalibrate"));
 	obs_property_t *audio_lat = obs_properties_add_int(
 		props, S_AUDIO_LATENCY, T_("AudioLatency"), 0, 500, 1);
 	obs_property_int_set_suffix(audio_lat, " ms");

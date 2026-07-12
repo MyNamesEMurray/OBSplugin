@@ -53,7 +53,12 @@ The video appears in the OBS source within a second or two. Disconnecting
   format list and only offers combinations the hardware supports
 - **Automatic lip sync**: pick any OBS audio source in the iOS Camera
   properties and the plugin continuously sets its sync offset to the
-  measured camera latency (minus a configurable audio-device latency)
+  measured camera latency (minus a configurable audio-device latency).
+  With **Auto-calibrate** on (plus "Auto lip-sync reference" in the app),
+  the plugin sends the phone mic purely as a timing reference and
+  cross-correlates it against your real microphone to measure that mic's
+  latency directly — fully automatic, no manual entry. The phone audio is
+  never played out.
 - **Adaptive bitrate**: when the link congests, the app backs the encoder
   off within a second and recovers gradually — no more latency spirals on
   weak Wi-Fi
@@ -78,9 +83,11 @@ obs-plugin/            C plugin for OBS Studio (CMake)
   src/h264-decoder.c   libavcodec H.264/HEVC → obs_source_frame (GPU-capable)
   src/usbmux.c         usbmuxd client (USB transport)
   src/web-control.c    browser control panel (http://localhost:9980)
+  src/lipsync.c        audio cross-correlation for lip-sync calibration
 ios-app/               SwiftUI companion app (XcodeGen project)
   Sources/VideoEncoder.swift  VideoToolbox encode + AVCC→Annex B
   Sources/StreamClient.swift  Network.framework listener + framing
+  Sources/AudioReference.swift  mic capture for lip-sync reference
   Sources/StreamingView.swift full-screen streaming UI + camera controls
 docs/PROTOCOL.md       wire protocol specification (version 1)
 ```

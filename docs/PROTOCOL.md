@@ -104,6 +104,20 @@ The plugin caches the latest snapshot and serves it at `/api/state` so
 remote UIs mirror the app (and vice versa) regardless of where a change
 was made.
 
+### 9 — AUDIO (app → plugin)
+Reference audio for lip-sync auto-calibration. Payload: raw **16 kHz mono
+signed-16-bit little-endian PCM**; `pts` = capture time of the first
+sample, in the same clock domain as video frames. Sent in ~100 ms chunks
+only while the app's "Auto lip-sync reference" option is on.
+
+This audio is **never played out**. The plugin converts each chunk's pts
+to its own clock (via the TIMESYNC offset), builds an amplitude envelope,
+and cross-correlates it against the OBS microphone the user selected. The
+correlation peak is the mic's true latency `L_mic`; the applied sync
+offset is then `L_v − L_mic` (video latency minus mic latency), measured
+directly with no manual entry. Low-confidence windows (silence) hold the
+last value.
+
 ## USB transport
 
 The packet protocol is identical over USB. The plugin reaches the app's
