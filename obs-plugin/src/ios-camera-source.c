@@ -27,6 +27,7 @@
 
 #define S_MODE "mode"
 #define S_HOST "host"
+#define S_USB_DEVICE "usb_device"
 #define S_LOW_LATENCY "low_latency"
 #define S_HW_DECODE "hw_decode"
 #define S_AUDIO_SOURCE "audio_sync_source"
@@ -65,6 +66,7 @@ struct ios_camera_source {
 
 	enum connection_mode conn_mode;
 	char host[128];
+	char usb_device[64]; /* pinned UDID for USB mode; "" = auto-assign */
 	volatile bool hw_decode;
 
 	/* Guarded by status_mutex (shared with the status string). */
@@ -982,15 +984,21 @@ static void dial_loop(struct ios_camera_source *s)
 		long usb_id = -1;
 
 		if (usb) {
-			long ids[16];
-			int n = usbmux_list_devices(ids, 16);
+			struct usbmux_device devs[16];
+			int n = usbmux_list_devices(devs, 16);
 
-			/* Drop our claim if that phone was unplugged. */
+			/* Identity is the stable UDID (claimed_key is
+			 * "usb:<udid>"); the ephemeral id is looked up fresh
+			 * each time, so replug/reboot reconnects the same
+			 * phone. */
+			const char *pinned = s->usb_device;
+
+			/* Drop our claim if that phone is no longer attached. */
 			if (claimed) {
-				long mine = strtol(claimed_key + 4, NULL, 10);
 				bool present = false;
 				for (int i = 0; i < n; i++)
-					if (ids[i] == mine)
+					if (strcmp(devs[i].udid,
+						   claimed_key + 4) == 0)
 						present = true;
 				if (!present) {
 					device_release(s);
@@ -998,12 +1006,18 @@ static void dial_loop(struct ios_camera_source *s)
 					claimed_key[0] = 0;
 				}
 			}
-			/* Claim the first attached phone no other source owns. */
+			/* Claim: the pinned phone if set, else the first
+			 * attached phone no other source owns. */
 			if (!claimed) {
 				for (int i = 0; i < n; i++) {
-					char k[32];
-					snprintf(k, sizeof(k), "usb:%ld",
-						 ids[i]);
+					if (!devs[i].udid[0])
+						continue;
+					if (pinned[0] &&
+					    strcmp(pinned, devs[i].udid) != 0)
+						continue;
+					char k[80];
+					snprintf(k, sizeof(k), "usb:%s",
+						 devs[i].udid);
 					if (device_claim(k, s)) {
 						claimed = true;
 						snprintf(claimed_key,
@@ -1014,13 +1028,23 @@ static void dial_loop(struct ios_camera_source *s)
 				}
 			}
 			if (!claimed) {
-				set_status(s, "%s",
-					   n > 0 ? T_("Status.DeviceBusy")
-						 : T_("Status.WaitingUSB"));
+				const char *why =
+					pinned[0] ? T_("Status.WaitingPinned")
+					: n > 0	  ? T_("Status.DeviceBusy")
+						  : T_("Status.WaitingUSB");
+				set_status(s, "%s", why);
 				sleep_ms_interruptible(s, 1000);
 				continue;
 			}
-			usb_id = strtol(claimed_key + 4, NULL, 10);
+			/* Resolve current id for our claimed UDID. */
+			usb_id = -1;
+			for (int i = 0; i < n; i++)
+				if (strcmp(devs[i].udid, claimed_key + 4) == 0)
+					usb_id = devs[i].id;
+			if (usb_id < 0) {
+				sleep_ms_interruptible(s, 1000);
+				continue;
+			}
 			set_status(s, "%s", T_("Status.WaitingUSB"));
 			sock = usbmux_connect_device(usb_id, OBSC_USB_PORT);
 		} else if (!s->host[0]) {
@@ -1194,10 +1218,14 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 		}
 	}
 
-	if (mode != s->conn_mode || strcmp(host, s->host) != 0) {
+	const char *usb_device = obs_data_get_string(settings, S_USB_DEVICE);
+	if (mode != s->conn_mode || strcmp(host, s->host) != 0 ||
+	    strcmp(usb_device, s->usb_device) != 0) {
 		stop_thread(s);
 		s->conn_mode = mode;
 		snprintf(s->host, sizeof(s->host), "%s", host);
+		snprintf(s->usb_device, sizeof(s->usb_device), "%s",
+			 usb_device);
 		start_thread(s);
 	}
 }
@@ -1217,6 +1245,8 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	s->conn_mode = parse_mode(obs_data_get_string(settings, S_MODE));
 	snprintf(s->host, sizeof(s->host), "%s",
 		 obs_data_get_string(settings, S_HOST));
+	snprintf(s->usb_device, sizeof(s->usb_device), "%s",
+		 obs_data_get_string(settings, S_USB_DEVICE));
 	obs_source_set_async_unbuffered(
 		source, obs_data_get_bool(settings, S_LOW_LATENCY));
 	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
@@ -1258,6 +1288,7 @@ static void ios_camera_get_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, S_MODE, MODE_DIAL);
 	obs_data_set_default_string(settings, S_HOST, "");
+	obs_data_set_default_string(settings, S_USB_DEVICE, "");
 	obs_data_set_default_bool(settings, S_LOW_LATENCY, true);
 	obs_data_set_default_bool(settings, S_HW_DECODE, true);
 	obs_data_set_default_bool(settings, S_AUDIO_SYNC, false);
@@ -1287,7 +1318,40 @@ static bool mode_modified(obs_properties_t *props, obs_property_t *property,
 		parse_mode(obs_data_get_string(settings, S_MODE));
 	obs_property_set_visible(obs_properties_get(props, S_HOST),
 				 mode == CONN_DIAL_NET);
+	obs_property_set_visible(obs_properties_get(props, S_USB_DEVICE),
+				 mode == CONN_DIAL_USB);
 	return true;
+}
+
+/* Populates the USB-device picker with "Auto" plus every attached phone
+ * (labelled by the last chars of its UDID), keeping the current pin even
+ * if that device is currently unplugged. */
+static void fill_usb_devices(obs_property_t *list, const char *current)
+{
+	obs_property_list_clear(list);
+	obs_property_list_add_string(list, T_("UsbDevice.Auto"), "");
+
+	struct usbmux_device devs[16];
+	int n = usbmux_list_devices(devs, 16);
+	bool current_seen = !current || !current[0];
+	for (int i = 0; i < n; i++) {
+		if (!devs[i].udid[0])
+			continue;
+		size_t len = strlen(devs[i].udid);
+		const char *tail =
+			devs[i].udid + (len > 6 ? len - 6 : 0);
+		char label[96];
+		snprintf(label, sizeof(label), "iPhone/iPad (…%s)", tail);
+		obs_property_list_add_string(list, label, devs[i].udid);
+		if (current && strcmp(current, devs[i].udid) == 0)
+			current_seen = true;
+	}
+	/* Keep a pinned-but-unplugged device selectable. */
+	if (!current_seen) {
+		char label[96];
+		snprintf(label, sizeof(label), "%s (not connected)", current);
+		obs_property_list_add_string(list, label, current);
+	}
 }
 
 static obs_properties_t *ios_camera_get_properties(void *data)
@@ -1304,6 +1368,12 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 	obs_property_set_modified_callback(mode, mode_modified);
 
 	obs_properties_add_text(props, S_HOST, T_("Host"), OBS_TEXT_DEFAULT);
+
+	obs_property_t *usb_dev = obs_properties_add_list(
+		props, S_USB_DEVICE, T_("UsbDevice"), OBS_COMBO_TYPE_LIST,
+		OBS_COMBO_FORMAT_STRING);
+	fill_usb_devices(usb_dev, s ? s->usb_device : "");
+
 	obs_properties_add_bool(props, S_LOW_LATENCY, T_("LowLatency"));
 	obs_properties_add_bool(props, S_HW_DECODE, T_("HwDecode"));
 

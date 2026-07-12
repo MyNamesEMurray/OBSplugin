@@ -45,9 +45,11 @@ The video appears in the OBS source within a second or two. Disconnecting
   via Apple's device mux (usbmuxd; on Windows install iTunes). USB needs
   no network at all and charges the phone while streaming.
 - **Multiple devices**: add one "iOS Camera" source per phone. Wi-Fi
-  sources each use their own IP; USB sources auto-distribute across the
-  attached phones (one per source). Two sources aimed at the *same* device
-  are prevented from fighting over it — the second reports it's in use.
+  sources each use their own IP; USB sources either **auto-distribute**
+  across attached phones (one per source) or can be **pinned to a specific
+  device** (by its stable UDID) so the same phone maps to the same source
+  across replugs and reboots. Two sources aimed at the *same* device are
+  prevented from fighting over it — the second reports it's in use.
 - **H.264 or HEVC**, hardware-encoded (HEVC ~40% smaller at the same
   quality; automatic H.264 fallback on devices without HEVC encode)
 - **Lens selection** — Main, Ultra Wide, Telephoto, Front: dynamically
@@ -155,14 +157,10 @@ Manual releases still work too — push any `v*` tag:
 git tag v0.3.0 && git push origin v0.3.0
 ```
 
-PRs auto-merge **only after the Build workflow passes**
-([`merge-on-green.yml`](.github/workflows/merge-on-green.yml)): the build
-runs on the PR, and when it succeeds the workflow merges that PR. This
-gates the merge on a green build without needing branch-protection
-"required checks" (which merge immediately when unset). Draft PRs are held
-(open as a draft to prevent auto-merge). Add a fine-grained PAT as the
-`AUTOMERGE_TOKEN` secret so the merge triggers the release pipeline (a
-merge by the default Actions token doesn't fire downstream workflows).
+PRs merge automatically once the required **Build** checks pass, via the
+repository's branch-protection rules on `main` (Settings → Branches).
+Because the release pipeline runs on the merge to `main`, a green build is
+required before anything ships.
 
 ## Continuous integration
 
