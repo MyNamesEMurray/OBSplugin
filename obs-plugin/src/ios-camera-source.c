@@ -901,30 +901,152 @@ fail:
 }
 
 /*
+ * Device-claim registry. All iOS Camera sources live in one process, so a
+ * shared table lets exactly one source own a given device target (a host
+ * IP, or "usb"). A second source aimed at the same device is refused
+ * instead of fighting over the single connection the phone can serve —
+ * which otherwise causes a rapid connect/disconnect flip-flop.
+ */
+#define MAX_CLAIMS 32
+static pthread_mutex_t g_claim_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct device_claim {
+	char key[192];
+	void *owner;
+} g_claims[MAX_CLAIMS];
+
+/* Returns true if `owner` holds (or just acquired) the key. */
+static bool device_claim(const char *key, void *owner)
+{
+	bool ok = false;
+	int slot = -1;
+
+	pthread_mutex_lock(&g_claim_mutex);
+	for (int i = 0; i < MAX_CLAIMS; i++) {
+		if (!g_claims[i].owner) {
+			if (slot < 0)
+				slot = i;
+			continue;
+		}
+		if (strcmp(g_claims[i].key, key) == 0) {
+			ok = g_claims[i].owner == owner; /* ours vs busy */
+			pthread_mutex_unlock(&g_claim_mutex);
+			return ok;
+		}
+	}
+	if (slot >= 0) {
+		snprintf(g_claims[slot].key, sizeof(g_claims[slot].key), "%s",
+			 key);
+		g_claims[slot].owner = owner;
+		ok = true;
+	}
+	pthread_mutex_unlock(&g_claim_mutex);
+	return ok;
+}
+
+static void device_release(void *owner)
+{
+	pthread_mutex_lock(&g_claim_mutex);
+	for (int i = 0; i < MAX_CLAIMS; i++) {
+		if (g_claims[i].owner == owner) {
+			g_claims[i].owner = NULL;
+			g_claims[i].key[0] = 0;
+		}
+	}
+	pthread_mutex_unlock(&g_claim_mutex);
+}
+
+/*
  * Dial modes: the app on the device listens; we connect to it — over the
  * LAN (host set in properties) or through usbmuxd. Retry every couple of
  * seconds until the app is reachable.
  */
+static void sleep_ms_interruptible(struct ios_camera_source *s, int total_ms)
+{
+	for (int i = 0; i < total_ms / 100 && !s->stop; i++)
+		os_sleep_ms(100);
+}
+
 static void dial_loop(struct ios_camera_source *s)
 {
 	bool usb = s->conn_mode == CONN_DIAL_USB;
+	/* The device we currently own, e.g. "net:192.168.1.5" or "usb:3".
+	 * Held across reconnects; a second source aimed at the same device
+	 * is refused so they don't fight over the one stream the phone can
+	 * serve. Different devices (different IPs, or different USB phones)
+	 * each get their own claim and run independently. */
+	char claimed_key[192] = {0};
+	bool claimed = false;
 
 	while (!s->stop) {
 		socket_t sock = OBSC_INVALID_SOCKET;
+		long usb_id = -1;
 
 		if (usb) {
+			long ids[16];
+			int n = usbmux_list_devices(ids, 16);
+
+			/* Drop our claim if that phone was unplugged. */
+			if (claimed) {
+				long mine = strtol(claimed_key + 4, NULL, 10);
+				bool present = false;
+				for (int i = 0; i < n; i++)
+					if (ids[i] == mine)
+						present = true;
+				if (!present) {
+					device_release(s);
+					claimed = false;
+					claimed_key[0] = 0;
+				}
+			}
+			/* Claim the first attached phone no other source owns. */
+			if (!claimed) {
+				for (int i = 0; i < n; i++) {
+					char k[32];
+					snprintf(k, sizeof(k), "usb:%ld",
+						 ids[i]);
+					if (device_claim(k, s)) {
+						claimed = true;
+						snprintf(claimed_key,
+							 sizeof(claimed_key),
+							 "%s", k);
+						break;
+					}
+				}
+			}
+			if (!claimed) {
+				set_status(s, "%s",
+					   n > 0 ? T_("Status.DeviceBusy")
+						 : T_("Status.WaitingUSB"));
+				sleep_ms_interruptible(s, 1000);
+				continue;
+			}
+			usb_id = strtol(claimed_key + 4, NULL, 10);
 			set_status(s, "%s", T_("Status.WaitingUSB"));
-			sock = usbmux_connect_first(OBSC_USB_PORT);
+			sock = usbmux_connect_device(usb_id, OBSC_USB_PORT);
 		} else if (!s->host[0]) {
 			set_status(s, "%s", T_("Status.NoHost"));
+			sleep_ms_interruptible(s, 2000);
+			continue;
 		} else {
+			if (!claimed) {
+				char k[192];
+				snprintf(k, sizeof(k), "net:%s", s->host);
+				if (!device_claim(k, s)) {
+					set_status(s, "%s",
+						   T_("Status.DeviceBusy"));
+					sleep_ms_interruptible(s, 1000);
+					continue;
+				}
+				claimed = true;
+				snprintf(claimed_key, sizeof(claimed_key), "%s",
+					 k);
+			}
 			set_status(s, "%s %s", T_("Status.Dialing"), s->host);
 			sock = tcp_dial(s->host, OBSC_USB_PORT);
 		}
 
 		if (sock == OBSC_INVALID_SOCKET) {
-			for (int i = 0; i < 20 && !s->stop; i++)
-				os_sleep_ms(100);
+			sleep_ms_interruptible(s, 2000);
 			continue;
 		}
 
@@ -954,6 +1076,9 @@ static void dial_loop(struct ios_camera_source *s)
 		blog(LOG_INFO, "[ios-camera] device connection ended");
 		client_disconnect(s, &client);
 	}
+
+	if (claimed)
+		device_release(s);
 }
 
 static void *server_thread(void *data)
