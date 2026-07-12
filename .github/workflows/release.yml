@@ -1,0 +1,174 @@
+name: Release
+
+# Push a version tag to publish a release with ready-to-install builds:
+#   git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  plugin-linux:
+    name: OBS plugin (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libobs-dev \
+            libavcodec-dev libavutil-dev
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+        working-directory: obs-plugin
+
+      - name: Package (extract into ~/.config/obs-studio/plugins)
+        run: |
+          mkdir -p stage/ios-camera-source/bin/64bit stage/ios-camera-source/data
+          cp obs-plugin/build/ios-camera-source.so stage/ios-camera-source/bin/64bit/
+          cp -r obs-plugin/data/* stage/ios-camera-source/data/
+          tar czf ios-camera-source-linux-x86_64.tar.gz -C stage ios-camera-source
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: ios-camera-source-linux-x86_64.tar.gz
+
+  plugin-windows:
+    name: OBS plugin (Windows)
+    runs-on: windows-2022
+    env:
+      OBS_REF: "32.1.2"
+      DEPS_TAG: "2025-08-23"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout obs-studio (for libobs)
+        uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_REF }}
+          path: obs-studio
+          submodules: recursive
+
+      - name: Download OBS prebuilt dependencies (FFmpeg)
+        run: |
+          curl -L -o deps.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-${{ env.DEPS_TAG }}-x64.zip"
+          7z x deps.zip -oobs-deps
+
+      - name: Cache libobs build
+        id: cache-libobs
+        uses: actions/cache@v4
+        with:
+          path: obs-build
+          key: libobs-${{ env.OBS_REF }}-${{ env.DEPS_TAG }}
+
+      - name: Build libobs
+        if: steps.cache-libobs.outputs.cache-hit != 'true'
+        run: |
+          cmake -S obs-studio -B obs-build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
+            -DENABLE_UI=OFF -DENABLE_FRONTEND=OFF -DENABLE_PLUGINS=OFF `
+            -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF -DENABLE_WEBSOCKET=OFF `
+            -DENABLE_AJA=OFF
+          cmake --build obs-build --target libobs --config Release
+
+      - name: Build plugin
+        run: |
+          cmake -S obs-plugin -B plugin-build -G "Visual Studio 17 2022" -A x64 `
+            -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config;${{ github.workspace }}\obs-studio\deps\w32-pthreads" `
+            -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib;${{ github.workspace }}\obs-build\deps\w32-pthreads\Release\w32-pthreads.lib" `
+            -DFFMPEG_INCLUDE_DIR="${{ github.workspace }}\obs-deps\include" `
+            -DAVCODEC_LIBRARY="${{ github.workspace }}\obs-deps\lib\avcodec.lib" `
+            -DAVUTIL_LIBRARY="${{ github.workspace }}\obs-deps\lib\avutil.lib"
+          cmake --build plugin-build --config Release
+
+      - name: Package (extract into C:\Program Files\obs-studio)
+        run: |
+          New-Item -ItemType Directory -Force -Path stage\obs-plugins\64bit | Out-Null
+          New-Item -ItemType Directory -Force -Path stage\data\obs-plugins\ios-camera-source | Out-Null
+          Copy-Item plugin-build\Release\ios-camera-source.dll stage\obs-plugins\64bit\
+          Copy-Item -Recurse obs-plugin\data\* stage\data\obs-plugins\ios-camera-source\
+          Compress-Archive -Path stage\* -DestinationPath ios-camera-source-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: ios-camera-source-windows-x64.zip
+
+  ios-app:
+    name: iOS app (unsigned IPA)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios-app
+
+      - name: Build unsigned device IPA
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OBSCam.xcodeproj \
+            -scheme OBSCam \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO
+          mkdir -p Payload
+          cp -R DerivedData/Build/Products/Release-iphoneos/OBSCam.app Payload/
+          zip -ry OBSCam-unsigned.ipa Payload
+        working-directory: ios-app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-ipa
+          path: ios-app/OBSCam-unsigned.ipa
+
+  publish:
+    name: Publish release
+    needs: [plugin-linux, plugin-windows, ios-app]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/ios-camera-source-windows-x64.zip
+            dist/ios-camera-source-linux-x86_64.tar.gz
+            dist/OBSCam-unsigned.ipa
+          body: |
+            ## Installing
+
+            **Windows (OBS plugin):** download `ios-camera-source-windows-x64.zip`
+            and extract it into `C:\Program Files\obs-studio\` (merge the
+            `obs-plugins` and `data` folders), then restart OBS. Built against
+            OBS Studio 32.x.
+
+            **Linux (OBS plugin):** download `ios-camera-source-linux-x86_64.tar.gz`
+            and extract it into `~/.config/obs-studio/plugins/`.
+
+            **iOS app:** download `OBSCam-unsigned.ipa` and sideload it with
+            [Sideloadly](https://sideloadly.io) (Windows/macOS, free Apple ID;
+            re-sign every 7 days) — Apple signing rules prevent distributing
+            an installable app directly.
+
+            USB mode requires iTunes on Windows (for the Apple Mobile Device
+            Service).
