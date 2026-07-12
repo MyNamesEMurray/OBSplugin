@@ -6,6 +6,12 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "Existing tag to publish the release under"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -140,7 +146,7 @@ jobs:
     name: Publish release
     needs: [plugin-linux, plugin-windows, ios-app]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag_name != ''
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -149,6 +155,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
           generate_release_notes: true
           files: |
             dist/ios-camera-source-windows-x64.zip

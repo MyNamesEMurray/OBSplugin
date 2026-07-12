@@ -117,9 +117,21 @@ Wi-Fi jitter.
 
 ## Releases
 
-Pushing a version tag publishes a GitHub Release with ready-to-install
-builds (Windows plugin zip, Linux plugin tarball, unsigned IPA) via
-[`.github/workflows/release.yml`](.github/workflows/release.yml):
+Releases are **automatic**: every push to `main` that touches
+`obs-plugin/` or `ios-app/` gets a version tag and a published GitHub
+Release with ready-to-install builds (Windows plugin zip, Linux plugin
+tarball, unsigned IPA).
+
+Version bumps are controlled by the merge-commit message:
+
+| Message contains  | Bump   | Example           |
+|-------------------|--------|-------------------|
+| *(nothing special)* | patch | v0.2.0 → v0.2.1 |
+| `#minor`          | minor  | v0.2.1 → v0.3.0   |
+| `#major`          | major  | v0.3.0 → v1.0.0   |
+| `[skip release]`  | none   | no release        |
+
+Manual releases still work too — push any `v*` tag:
 
 ```bash
 git tag v0.3.0 && git push origin v0.3.0
