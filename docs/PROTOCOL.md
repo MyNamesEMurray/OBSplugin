@@ -1,7 +1,9 @@
 # OBS iOS Camera — Wire Protocol (version 1)
 
-The iOS app is the **client**; the OBS plugin is the **server**. Transport is a
-single TCP connection on the plugin's configured port (default **9977**).
+The iOS app **listens** on TCP port **9979** on the device; the OBS plugin
+**dials** it — over the LAN (the phone's IP, shown in the app) or through
+usbmuxd (USB cable). Once connected, the app immediately sends HELLO and
+the packet stream begins.
 
 All multi-byte integers are **big-endian** (network byte order).
 
@@ -56,8 +58,8 @@ IDR/IRAP slice so a decoder can join mid-stream.
 be monotonic; OBS re-bases async timestamps itself.
 
 ### 4 — PING
-Optional keep-alive, empty payload, sent by the client every ~2 s while idle.
-The server ignores it.
+Optional keep-alive, empty payload, sent by the app every ~2 s.
+The plugin ignores it.
 
 ### 5 — TIMESYNC_REQ (plugin → app)
 Empty payload; `pts` = the plugin's monotonic clock (t1, nanoseconds).
@@ -104,28 +106,10 @@ was made.
 
 ## USB transport
 
-The packet protocol is identical over USB; only the transport roles flip.
-The app listens on TCP port **9979** on the device, and the plugin dials
-that port through the usbmuxd protocol (Apple Mobile Device Service on
+The packet protocol is identical over USB. The plugin reaches the app's
+listener through the usbmuxd protocol (Apple Mobile Device Service on
 `localhost:27015` on Windows; the `/var/run/usbmuxd` socket on
 macOS/Linux): `ListDevices` → first attached device → `Connect` with the
 port in network byte order. After a successful `Connect` result the mux
 socket is a raw byte pipe and the normal packet stream begins with the
 app's HELLO.
-
-## Discovery (optional)
-
-The plugin listens for UDP datagrams on port **9978** (discovery port =
-video port + 1). A client broadcasts the ASCII string:
-
-```
-OBSC_DISCOVER
-```
-
-to `255.255.255.255:9978`. Each plugin instance replies to the sender with:
-
-```
-OBSC_HERE:<tcp_port>:<host_name>
-```
-
-Discovery is best-effort; manual host/port entry always works.

@@ -15,18 +15,12 @@ struct ContentView: View {
         NavigationView {
             Form {
                 statusSection
-                modeSection
-                if streamer.connectionMode == .dial {
-                    connectionSection
-                } else {
-                    receiveSection
-                }
+                receiveSection
                 cameraSection
                 optionsSection
                 actionSection
             }
             .navigationTitle("OBSCam")
-            .onAppear { streamer.refreshServers() }
         }
         .navigationViewStyle(.stack)
     }
@@ -52,10 +46,8 @@ struct ContentView: View {
     }
 
     private var statusText: String {
-        if streamer.status == .connecting && streamer.connectionMode == .receive {
-            return "Waiting for OBS to connect…"
-        }
-        return streamer.status.label
+        streamer.status == .connecting ? "Waiting for OBS to connect…"
+                                       : streamer.status.label
     }
 
     private var statusColor: Color {
@@ -64,17 +56,6 @@ struct ContentView: View {
         case .connecting: return .yellow
         case .streaming: return .green
         case .error: return .red
-        }
-    }
-
-    private var modeSection: some View {
-        Section {
-            Picker("Connection", selection: $streamer.connectionMode) {
-                ForEach(Streamer.ConnectionMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
         }
     }
 
@@ -106,48 +87,6 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
             } icon: {
                 Image(systemName: "cable.connector")
-            }
-        }
-    }
-
-    private var connectionSection: some View {
-        Section("OBS Connection") {
-            if !streamer.discoveredServers.isEmpty {
-                ForEach(streamer.discoveredServers) { server in
-                    Button {
-                        streamer.select(server)
-                    } label: {
-                        HStack {
-                            Image(systemName: "desktopcomputer")
-                            VStack(alignment: .leading) {
-                                Text(server.name)
-                                Text("\(server.host):\(String(server.port))")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            if streamer.host == server.host {
-                                Image(systemName: "checkmark")
-                                    .foregroundColor(.accentColor)
-                            }
-                        }
-                    }
-                    .foregroundColor(.primary)
-                }
-            }
-
-            TextField("Computer IP (e.g. 192.168.1.20)", text: $streamer.host)
-                .keyboardType(.numbersAndPunctuation)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-
-            TextField("Port", text: $streamer.portText)
-                .keyboardType(.numberPad)
-
-            Button {
-                streamer.refreshServers()
-            } label: {
-                Label("Scan for OBS on this network", systemImage: "arrow.clockwise")
             }
         }
     }
