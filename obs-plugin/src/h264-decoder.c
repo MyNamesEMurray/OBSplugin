@@ -31,6 +31,10 @@ struct h264_decoder *h264_decoder_create(void)
 
 	dec->ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
 	dec->ctx->flags2 |= AV_CODEC_FLAG2_CHUNKS;
+	/* Frame threading buffers one input frame per thread before any
+	 * output appears — pure added latency for a live stream. The
+	 * encoder sends single-slice frames, so decode single-threaded. */
+	dec->ctx->thread_count = 1;
 
 	if (avcodec_open2(dec->ctx, codec, NULL) < 0) {
 		blog(LOG_ERROR, "[ios-camera] failed to open H.264 decoder");

@@ -67,6 +67,28 @@ A tiny length-prefixed packet protocol over one TCP connection (video is
 H.264 Annex B access units; timestamps in nanoseconds). Full spec in
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
+## Latency
+
+The plugin continuously measures **capture→decode latency** (camera
+timestamp on the phone to decoded frame in OBS) using NTP-style clock sync
+over the stream connection — accurate to about half the link round-trip
+(±1–2 ms). It's reported every 5 s in the OBS log
+(`[ios-camera] capture->decode latency: …`) and in the source's Status
+field (reopen Properties to refresh).
+
+That figure excludes OBS's own render/compositing and your display. For
+true glass-to-glass, point the phone at a millisecond stopwatch on your
+monitor and screenshot the OBS preview next to the stopwatch — the
+difference is the real end-to-end number.
+
+Low-latency defaults: the source renders the newest frame immediately
+("Low latency mode" checkbox, on by default — turn it off if you prefer
+smoother pacing over minimum delay), the H.264 decoder runs single-threaded
+low-delay, the encoder prioritizes speed with no frame reordering, and the
+app drops rather than queues frames when the link stalls. USB mode
+typically shaves a few more milliseconds over Wi-Fi and is immune to
+Wi-Fi jitter.
+
 ## Continuous integration
 
 Every push/PR runs [`.github/workflows/build.yml`](.github/workflows/build.yml):

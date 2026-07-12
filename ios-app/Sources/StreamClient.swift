@@ -31,8 +31,13 @@ final class StreamClient {
 
     /// Video frames queued into the connection but not yet processed.
     /// Guarded by `queue` (all sends and completions run there).
+    /// Kept small: a deep queue is invisible latency — better to drop
+    /// non-keyframes and stay current.
     private var inFlightFrames = 0
-    private static let maxInFlightFrames = 60
+    private static let maxInFlightFrames = 12
+
+    /// Incoming bytes from the plugin (timesync requests), queue-confined.
+    private var receiveBuffer = Data()
 
     // MARK: - Lifecycle
 
@@ -165,6 +170,7 @@ final class StreamClient {
     /// for the peer to dial back; in dial mode we report the drop.
     private func connectionEnded(failure: String?) {
         teardownConnection()
+        receiveBuffer.removeAll()
         if listener != nil {
             state = .connecting
         } else if let failure {
@@ -175,14 +181,59 @@ final class StreamClient {
     }
 
     private func receiveLoop(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self, weak connection] _, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self, weak connection] content, _, isComplete, error in
             guard let self, let connection, self.connection === connection else { return }
+            if let content {
+                self.receiveBuffer.append(content)
+                self.processIncoming()
+            }
             if isComplete || error != nil {
                 self.connectionEnded(failure: nil)
                 return
             }
             self.receiveLoop(on: connection)
         }
+    }
+
+    /// Parses packets from the plugin. Today that's only timesync
+    /// requests, which we answer immediately for latency measurement.
+    private func processIncoming() {
+        while receiveBuffer.count >= OBSCProtocol.headerSize {
+            let bytes = [UInt8](receiveBuffer.prefix(OBSCProtocol.headerSize))
+            guard Array(bytes[0..<4]) == OBSCProtocol.magic,
+                  bytes[4] == OBSCProtocol.version else {
+                receiveBuffer.removeAll()
+                return
+            }
+
+            let type = bytes[5]
+            let pts = bytes[8..<16].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+            let payloadSize = bytes[16..<20].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+            guard payloadSize < 1 << 20 else {
+                receiveBuffer.removeAll()
+                return
+            }
+
+            let total = OBSCProtocol.headerSize + Int(payloadSize)
+            guard receiveBuffer.count >= total else { return }
+            receiveBuffer.removeFirst(total)
+
+            if type == OBSCProtocol.PacketType.timesyncReq.rawValue {
+                respondToTimesync(pluginClock: pts)
+            }
+        }
+    }
+
+    private func respondToTimesync(pluginClock: UInt64) {
+        // Same clock domain as the camera's presentation timestamps
+        // (mach host time), so the plugin can relate frame pts to it.
+        let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        var payload = Data()
+        withUnsafeBytes(of: pluginClock.bigEndian) { payload.append(contentsOf: $0) }
+        sendOnQueue(OBSCProtocol.packet(type: .timesyncResp,
+                                        ptsNanoseconds: now,
+                                        payload: payload),
+                    isVideoFrame: false)
     }
 
     // MARK: - Sending
