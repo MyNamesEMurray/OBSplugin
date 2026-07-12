@@ -11,12 +11,11 @@ Two components:
 | **iOS app** (`OBSCam`) | [`ios-app/`](ios-app/) | Captures the camera with AVFoundation, hardware-encodes with VideoToolbox, and serves the stream to the plugin over TCP (port 9979 on the device). |
 
 ```
-┌─────────────── iPhone ───────────────┐        ┌──────────── Computer ────────────┐
-│ AVCaptureSession → VideoToolbox H.264 │  TCP   │ TCP server → libavcodec decode → │
-│ → Annex B framing → NWConnection      │ ─────▶ │ obs_source_output_video()        │
-└──────────────────────────────────────┘  :9977  └──────────────────────────────────┘
-                     ▲  UDP broadcast discovery (:9978)  │
-                     └───────────────────────────────────┘
+┌────────────── iPhone ───────────────┐         ┌─────────── Computer ────────────┐
+│ AVCaptureSession → VideoToolbox     │   TCP   │ plugin dials the phone (LAN IP  │
+│ H.264/HEVC → Annex B → NWListener   │ ◀────── │ or USB via usbmuxd) → decode →  │
+│ (port 9979 on the device)           │ ──────▶ │ obs_source_output_video()       │
+└─────────────────────────────────────┘  video  └─────────────────────────────────┘
 ```
 
 ## Quick start
@@ -57,8 +56,7 @@ The video appears in the OBS source within a second or two. Disconnecting
 - **Remote camera control from the PC**: the plugin serves a control panel
   at http://localhost:9980 (zoom / exposure / focus / torch / flip) that
   drives the phone over the stream connection
-- Front or back camera, mirrored front-camera preview
-- Automatic OBS discovery on the LAN (UDP broadcast), with manual IP fallback
+- Mirrored front-camera preview
 - Reconnect-friendly: keyframes every 2 s carry SPS/PPS, so OBS can join or
   recover mid-stream
 - Cross-platform plugin (Linux / macOS / Windows), plain C against libobs +
@@ -69,12 +67,14 @@ The video appears in the OBS source within a second or two. Disconnecting
 ```
 obs-plugin/            C plugin for OBS Studio (CMake)
   src/protocol.h       wire-protocol constants + header parsing
-  src/ios-camera-source.c   the OBS source: TCP server, discovery, packet loop
-  src/h264-decoder.c   libavcodec H.264 → obs_source_frame
+  src/ios-camera-source.c   the OBS source: dial loop, latency, lip sync
+  src/h264-decoder.c   libavcodec H.264/HEVC → obs_source_frame (GPU-capable)
+  src/usbmux.c         usbmuxd client (USB transport)
+  src/web-control.c    browser control panel (http://localhost:9980)
 ios-app/               SwiftUI companion app (XcodeGen project)
-  Sources/H264Encoder.swift   VideoToolbox encode + AVCC→Annex B
-  Sources/StreamClient.swift  Network.framework TCP client + framing
-  Sources/DiscoveryClient.swift  UDP broadcast discovery
+  Sources/VideoEncoder.swift  VideoToolbox encode + AVCC→Annex B
+  Sources/StreamClient.swift  Network.framework listener + framing
+  Sources/StreamingView.swift full-screen streaming UI + camera controls
 docs/PROTOCOL.md       wire protocol specification (version 1)
 ```
 
@@ -126,7 +126,6 @@ Every push/PR runs [`.github/workflows/build.yml`](.github/workflows/build.yml):
 ## Limitations & roadmap
 
 - Video only — microphone audio is a natural next step (`OBSC_PKT_AUDIO`).
-- One connected device per source (add multiple sources on different ports
-  for multiple phones).
+- One connected device per source.
 - The stream is unencrypted on your LAN; intended for trusted home/studio
   networks.
