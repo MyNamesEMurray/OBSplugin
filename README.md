@@ -7,35 +7,56 @@ Two components:
 
 | Component | Path | What it does |
 |-----------|------|--------------|
-| **OBS plugin** (`iOS Camera` source) | [`obs-plugin/`](obs-plugin/) | Listens on TCP port 9977, decodes the incoming H.264 stream with FFmpeg, and renders it as a normal OBS video source. Also answers LAN discovery probes on UDP 9978. |
-| **iOS app** (`OBSCam`) | [`ios-app/`](ios-app/) | Captures the camera with AVFoundation, hardware-encodes to H.264 with VideoToolbox, and streams it to the plugin over TCP. |
+| **OBS plugin** (`iOS Camera` source) | [`obs-plugin/`](obs-plugin/) | Connects to the phone (LAN IP or USB via usbmuxd), decodes the incoming H.264/HEVC stream with FFmpeg (GPU when available), and renders it as a normal OBS video source. |
+| **iOS app** (`OBSCam`) | [`ios-app/`](ios-app/) | Captures the camera with AVFoundation, hardware-encodes with VideoToolbox, and serves the stream to the plugin over TCP (port 9979 on the device). |
 
 ```
-┌─────────────── iPhone ───────────────┐        ┌──────────── Computer ────────────┐
-│ AVCaptureSession → VideoToolbox H.264 │  TCP   │ TCP server → libavcodec decode → │
-│ → Annex B framing → NWConnection      │ ─────▶ │ obs_source_output_video()        │
-└──────────────────────────────────────┘  :9977  └──────────────────────────────────┘
-                     ▲  UDP broadcast discovery (:9978)  │
-                     └───────────────────────────────────┘
+┌────────────── iPhone ───────────────┐         ┌─────────── Computer ────────────┐
+│ AVCaptureSession → VideoToolbox     │   TCP   │ plugin dials the phone (LAN IP  │
+│ H.264/HEVC → Annex B → NWListener   │ ◀────── │ or USB via usbmuxd) → decode →  │
+│ (port 9979 on the device)           │ ──────▶ │ obs_source_output_video()       │
+└─────────────────────────────────────┘  video  └─────────────────────────────────┘
 ```
 
 ## Quick start
 
 1. **Build & install the plugin** — see [`obs-plugin/BUILDING.md`](obs-plugin/BUILDING.md).
 2. **Build & run the iOS app** — see [`ios-app/BUILDING.md`](ios-app/BUILDING.md).
-3. In OBS: *Sources → + → iOS Camera*. Leave the port at 9977.
-4. On the phone (same Wi-Fi): open OBSCam, tap your computer in the
-   discovered list (or type its IP), pick camera/resolution/frame rate, and
-   tap **Start streaming to OBS**.
+3. On the phone: open OBSCam, pick camera/resolution/frame rate, and tap
+   **Start** — the app shows the phone's IP address.
+4. In OBS: *Sources → + → iOS Camera*, enter that IP as the **Phone IP**
+   (or plug in a USB cable and pick Connection → **USB cable** — no Wi-Fi
+   needed). OBS connects to the phone within a couple of seconds.
 
 The video appears in the OBS source within a second or two. Disconnecting
 (or backgrounding the app) blanks the source.
 
 ## Features
 
-- 720p / 1080p at 30 or 60 fps, hardware-encoded (low battery/CPU cost)
-- Front or back camera, mirrored front-camera preview
-- Automatic OBS discovery on the LAN (UDP broadcast), with manual IP fallback
+- **Wi-Fi or USB**: OBS connects to the phone — enter the IP the app shows
+  (no inbound firewall rules on the PC), or use the Lightning/USB-C cable
+  via Apple's device mux (usbmuxd; on Windows install iTunes). USB needs
+  no network at all and charges the phone while streaming.
+- **H.264 or HEVC**, hardware-encoded (HEVC ~40% smaller at the same
+  quality; automatic H.264 fallback on devices without HEVC encode)
+- **Lens selection** — Main, Ultra Wide, Telephoto, Front: dynamically
+  enumerated from the device's actual cameras, switchable live while
+  streaming (picker in settings, lens menu in the streaming view)
+- **720p / 1080p / 4K at 30 or 60 fps** — the app reads each lens's real
+  format list and only offers combinations the hardware supports
+- **Automatic lip sync**: pick any OBS audio source in the iOS Camera
+  properties and the plugin continuously sets its sync offset to the
+  measured camera latency (minus a configurable audio-device latency)
+- **Adaptive bitrate**: when the link congests, the app backs the encoder
+  off within a second and recovers gradually — no more latency spirals on
+  weak Wi-Fi
+- **Full-screen streaming UI** with pinch zoom, tap-to-focus, exposure
+  bias, focus lock (AF/manual lens position), torch, camera flip, and
+  battery-saving auto-dim
+- **Remote camera control from the PC**: the plugin serves a control panel
+  at http://localhost:9980 (zoom / exposure / focus / torch / flip) that
+  drives the phone over the stream connection
+- Mirrored front-camera preview
 - Reconnect-friendly: keyframes every 2 s carry SPS/PPS, so OBS can join or
   recover mid-stream
 - Cross-platform plugin (Linux / macOS / Windows), plain C against libobs +
@@ -46,12 +67,14 @@ The video appears in the OBS source within a second or two. Disconnecting
 ```
 obs-plugin/            C plugin for OBS Studio (CMake)
   src/protocol.h       wire-protocol constants + header parsing
-  src/ios-camera-source.c   the OBS source: TCP server, discovery, packet loop
-  src/h264-decoder.c   libavcodec H.264 → obs_source_frame
+  src/ios-camera-source.c   the OBS source: dial loop, latency, lip sync
+  src/h264-decoder.c   libavcodec H.264/HEVC → obs_source_frame (GPU-capable)
+  src/usbmux.c         usbmuxd client (USB transport)
+  src/web-control.c    browser control panel (http://localhost:9980)
 ios-app/               SwiftUI companion app (XcodeGen project)
-  Sources/H264Encoder.swift   VideoToolbox encode + AVCC→Annex B
-  Sources/StreamClient.swift  Network.framework TCP client + framing
-  Sources/DiscoveryClient.swift  UDP broadcast discovery
+  Sources/VideoEncoder.swift  VideoToolbox encode + AVCC→Annex B
+  Sources/StreamClient.swift  Network.framework listener + framing
+  Sources/StreamingView.swift full-screen streaming UI + camera controls
 docs/PROTOCOL.md       wire protocol specification (version 1)
 ```
 
@@ -60,6 +83,30 @@ docs/PROTOCOL.md       wire protocol specification (version 1)
 A tiny length-prefixed packet protocol over one TCP connection (video is
 H.264 Annex B access units; timestamps in nanoseconds). Full spec in
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+
+## Latency
+
+The plugin continuously measures **capture→decode latency** (camera
+timestamp on the phone to decoded frame in OBS) using NTP-style clock sync
+over the stream connection — accurate to about half the link round-trip
+(±1–2 ms). It's reported every 5 s in the OBS log
+(`[ios-camera] capture->decode latency: …`) and in the source's Status
+field (reopen Properties to refresh).
+
+That figure excludes OBS's own render/compositing and your display. For
+true glass-to-glass, point the phone at a millisecond stopwatch on your
+monitor and screenshot the OBS preview next to the stopwatch — the
+difference is the real end-to-end number.
+
+Low-latency defaults: the source renders the newest frame immediately
+("Low latency mode" checkbox, on by default — turn it off if you prefer
+smoother pacing over minimum delay), decoding runs on the GPU when
+available (D3D11VA on Windows, VideoToolbox on macOS, VAAPI on Linux;
+automatic software fallback, toggleable via "Hardware decoding"), the
+encoder prioritizes speed with no frame reordering, and the app drops
+rather than queues frames when the link stalls. USB mode
+typically shaves a few more milliseconds over Wi-Fi and is immune to
+Wi-Fi jitter.
 
 ## Continuous integration
 
@@ -79,7 +126,6 @@ Every push/PR runs [`.github/workflows/build.yml`](.github/workflows/build.yml):
 ## Limitations & roadmap
 
 - Video only — microphone audio is a natural next step (`OBSC_PKT_AUDIO`).
-- One connected device per source (add multiple sources on different ports
-  for multiple phones).
+- One connected device per source.
 - The stream is unencrypted on your LAN; intended for trusted home/studio
   networks.

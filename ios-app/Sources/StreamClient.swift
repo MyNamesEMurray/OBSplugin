@@ -2,7 +2,8 @@ import Foundation
 import Network
 import UIKit
 
-/// TCP client that frames and sends protocol packets to the OBS plugin.
+/// TCP server the OBS plugin dials — over the LAN (phone IP) or through
+/// usbmuxd (USB cable). Frames and sends protocol packets to the plugin.
 final class StreamClient {
     enum State: Equatable {
         case disconnected
@@ -12,86 +13,250 @@ final class StreamClient {
     }
 
     var onStateChange: ((State) -> Void)?
+    /// Remote camera-control command (JSON) received from the plugin.
+    var onControl: ((Data) -> Void)?
+    /// A video frame was dropped: the reference chain is broken and the
+    /// encoder should produce a fresh keyframe ASAP.
+    var onFrameDropped: (() -> Void)?
 
     private(set) var state: State = .disconnected {
         didSet { onStateChange?(state) }
     }
 
     private var connection: NWConnection?
+    private var listener: NWListener?
     private let queue = DispatchQueue(label: "obscam.network")
     private var pingTimer: DispatchSourceTimer?
 
-    func connect(host: String, port: UInt16) {
-        disconnect()
+    /// Video frames queued into the connection but not yet processed.
+    /// Guarded by `queue` (all sends and completions run there).
+    /// Kept small: a deep queue is invisible latency — better to drop
+    /// non-keyframes and stay current.
+    private var inFlightFrames = 0
+    private static let maxInFlightFrames = 12
 
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            state = .failed("Invalid port")
-            return
+    /// Incoming bytes from the plugin (timesync requests), queue-confined.
+    private var receiveBuffer = Data()
+
+    // MARK: - Lifecycle
+
+    func start(port: UInt16) {
+        // Clean up any previous transport *silently* — a state change
+        // here would look like a fresh drop to the Streamer.
+        teardownConnection()
+        teardownListener()
+        listen(on: port)
+    }
+
+    func disconnect() {
+        teardownConnection()
+        teardownListener()
+        state = .disconnected
+    }
+
+    private func teardownConnection() {
+        pingTimer?.cancel()
+        pingTimer = nil
+        connection?.cancel()
+        connection = nil
+        queue.async { [weak self] in
+            self?.inFlightFrames = 0
+            self?.waitingForKeyframe = false
         }
+    }
 
+    private func teardownListener() {
+        listener?.cancel()
+        listener = nil
+    }
+
+    // MARK: - Transports
+
+    private static func tcpParameters() -> NWParameters {
         let params = NWParameters.tcp
         if let tcpOptions = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
             tcpOptions.noDelay = true
             tcpOptions.connectionTimeout = 5
         }
+        return params
+    }
 
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)
-        self.connection = connection
+    private func listen(on port: UInt16) {
+        guard let nwPort = NWEndpoint.Port(rawValue: port),
+              let listener = try? NWListener(using: Self.tcpParameters(), on: nwPort) else {
+            state = .failed("Could not open USB listener")
+            return
+        }
+
+        self.listener = listener
         state = .connecting
 
-        connection.stateUpdateHandler = { [weak self] newState in
-            guard let self else { return }
+        listener.newConnectionHandler = { [weak self, weak listener] newConnection in
+            guard let self, let listener, self.listener === listener else {
+                newConnection.cancel()
+                return
+            }
+            // Newest connection wins (e.g. OBS restarted).
+            self.teardownConnection()
+            self.adopt(newConnection)
+        }
+        listener.stateUpdateHandler = { [weak self, weak listener] newState in
+            guard let self, let listener, self.listener === listener else { return }
+            if case .failed(let error) = newState {
+                self.state = .failed(error.localizedDescription)
+                self.teardownListener()
+                self.teardownConnection()
+            }
+        }
+
+        listener.start(queue: queue)
+    }
+
+    /// Wires up state handling for a connection (dialed or accepted) and
+    /// starts it.
+    private func adopt(_ connection: NWConnection) {
+        self.connection = connection
+
+        connection.stateUpdateHandler = { [weak self, weak connection] newState in
+            guard let self, let connection,
+                  self.connection === connection else { return }
             switch newState {
             case .ready:
                 self.state = .connected
                 self.sendHello()
                 self.startPing()
+                // Drain (and ignore) anything the server might send; also
+                // detects EOF. Must only start once the connection is ready.
+                self.receiveLoop(on: connection)
+            case .waiting(let error):
+                // Keep trying (e.g. transient route/permission delays), but
+                // surface why we're stuck.
+                self.state = .connecting
+                print("StreamClient waiting: \(error)")
             case .failed(let error):
-                self.state = .failed(error.localizedDescription)
-                self.teardown()
+                self.connectionEnded(failure: error.localizedDescription)
             case .cancelled:
-                self.state = .disconnected
+                break
             default:
                 break
             }
         }
 
-        // Drain (and ignore) anything the server might send; also detects EOF.
-        receiveLoop(on: connection)
         connection.start(queue: queue)
     }
 
-    func disconnect() {
-        teardown()
-        state = .disconnected
-    }
-
-    private func teardown() {
-        pingTimer?.cancel()
-        pingTimer = nil
-        connection?.cancel()
-        connection = nil
+    /// The active connection dropped; the listener stays up so the
+    /// plugin can dial back in.
+    private func connectionEnded(failure: String?) {
+        teardownConnection()
+        receiveBuffer.removeAll()
+        state = listener != nil ? .connecting : .disconnected
     }
 
     private func receiveLoop(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self, weak connection] _, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self, weak connection] content, _, isComplete, error in
             guard let self, let connection, self.connection === connection else { return }
+            if let content {
+                self.receiveBuffer.append(content)
+                self.processIncoming()
+            }
             if isComplete || error != nil {
-                self.state = .disconnected
-                self.teardown()
+                self.connectionEnded(failure: nil)
                 return
             }
             self.receiveLoop(on: connection)
         }
     }
 
+    /// Parses packets from the plugin. Today that's only timesync
+    /// requests, which we answer immediately for latency measurement.
+    private func processIncoming() {
+        while receiveBuffer.count >= OBSCProtocol.headerSize {
+            let bytes = [UInt8](receiveBuffer.prefix(OBSCProtocol.headerSize))
+            guard Array(bytes[0..<4]) == OBSCProtocol.magic,
+                  bytes[4] == OBSCProtocol.version else {
+                receiveBuffer.removeAll()
+                return
+            }
+
+            let type = bytes[5]
+            let pts = bytes[8..<16].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+            let payloadSize = bytes[16..<20].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+            guard payloadSize < 1 << 20 else {
+                receiveBuffer.removeAll()
+                return
+            }
+
+            let total = OBSCProtocol.headerSize + Int(payloadSize)
+            guard receiveBuffer.count >= total else { return }
+            let payload = receiveBuffer.subdata(
+                in: receiveBuffer.startIndex + OBSCProtocol.headerSize
+                    ..< receiveBuffer.startIndex + total)
+            receiveBuffer.removeFirst(total)
+
+            switch type {
+            case OBSCProtocol.PacketType.timesyncReq.rawValue:
+                respondToTimesync(pluginClock: pts)
+            case OBSCProtocol.PacketType.control.rawValue:
+                onControl?(payload)
+            default:
+                break
+            }
+        }
+    }
+
+    private func respondToTimesync(pluginClock: UInt64) {
+        // Same clock domain as the camera's presentation timestamps
+        // (mach host time), so the plugin can relate frame pts to it.
+        let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        var payload = Data()
+        withUnsafeBytes(of: pluginClock.bigEndian) { payload.append(contentsOf: $0) }
+        sendOnQueue(OBSCProtocol.packet(type: .timesyncResp,
+                                        ptsNanoseconds: now,
+                                        payload: payload),
+                    isVideoFrame: false)
+    }
+
     // MARK: - Sending
 
-    private func send(_ data: Data) {
-        connection?.send(content: data, completion: .contentProcessed { [weak self] error in
-            if let error {
-                self?.state = .failed(error.localizedDescription)
-                self?.teardown()
+    /// True when `error` just means the connection was cancelled by us —
+    /// expected during teardown/reconnect, never a real failure.
+    private static func isCancellation(_ error: NWError) -> Bool {
+        if case .posix(let code) = error, code == .ECANCELED {
+            return true
+        }
+        return false
+    }
+
+    private func send(_ data: Data, isVideoFrame: Bool = false) {
+        // All connection access and counter updates happen on `queue`;
+        // callers may be on the main thread or the encoder thread.
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.sendOnQueue(data, isVideoFrame: isVideoFrame)
+        }
+    }
+
+    private func sendOnQueue(_ data: Data, isVideoFrame: Bool) {
+        guard let connection else { return }
+        let enqueuedAt = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        connection.send(content: data, completion: .contentProcessed { [weak self, weak connection] error in
+            guard let self else { return }
+            if isVideoFrame {
+                if self.inFlightFrames > 0 {
+                    self.inFlightFrames -= 1
+                }
+                let delay = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - enqueuedAt
+                if delay > self.maxSendDelayNs {
+                    self.maxSendDelayNs = delay
+                }
+            }
+            // Ignore results from connections we've already abandoned, and
+            // our own cancellations — reacting to those poisons the next
+            // connection attempt.
+            guard let connection, self.connection === connection else { return }
+            if let error, !Self.isCancellation(error) {
+                self.connectionEnded(failure: error.localizedDescription)
             }
         })
     }
@@ -106,9 +271,9 @@ final class StreamClient {
         send(OBSCProtocol.packet(type: .hello, payload: payload))
     }
 
-    func sendVideoConfig(width: Int32, height: Int32, fps: Int32) {
+    func sendVideoConfig(codec: VideoCodec, width: Int32, height: Int32, fps: Int32) {
         let config: [String: Any] = [
-            "codec": "h264",
+            "codec": codec.rawValue,
             "width": Int(width),
             "height": Int(height),
             "fps": Int(fps),
@@ -117,12 +282,68 @@ final class StreamClient {
         send(OBSCProtocol.packet(type: .videoConfig, payload: payload))
     }
 
-    func sendVideoFrame(_ frame: H264Encoder.EncodedFrame) {
-        let flags: OBSCProtocol.Flags = frame.isKeyframe ? [.keyframe] : []
-        send(OBSCProtocol.packet(type: .video,
-                                 flags: flags,
-                                 ptsNanoseconds: frame.ptsNanoseconds,
-                                 payload: frame.data))
+    /// Reports the app's current camera-control state so remote UIs
+    /// (the plugin's web panel) can stay in sync.
+    func sendState(_ state: [String: Any]) {
+        guard let payload = try? JSONSerialization.data(withJSONObject: state) else { return }
+        send(OBSCProtocol.packet(type: .state, payload: payload))
+    }
+
+    /// Called from the encoder's output thread; hops to the network queue
+    /// so the in-flight counter stays consistent. If the network can't keep
+    /// up, non-keyframes are dropped rather than queued without bound.
+    /// Frames dropped due to backpressure since the last check — the
+    /// congestion signal for adaptive bitrate.
+    private var droppedFrames = 0
+
+    /// Worst send-to-accepted delay since the last check. TCP hides
+    /// congestion in the kernel socket buffer long before our own queue
+    /// fills; the time a send takes to be accepted exposes it.
+    private var maxSendDelayNs: UInt64 = 0
+
+    func takeDroppedFrameCount() -> Int {
+        queue.sync {
+            let count = droppedFrames
+            droppedFrames = 0
+            return count
+        }
+    }
+
+    func takeMaxSendDelayMs() -> Int {
+        queue.sync {
+            let ns = maxSendDelayNs
+            maxSendDelayNs = 0
+            return Int(ns / 1_000_000)
+        }
+    }
+
+    /// After a drop, every following frame references a frame the decoder
+    /// never received — decoding them produces grey "error concealment"
+    /// smear. Skip them until a fresh keyframe restarts the chain.
+    private var waitingForKeyframe = false
+
+    func sendVideoFrame(_ frame: VideoEncoder.EncodedFrame) {
+        queue.async { [weak self] in
+            guard let self, self.connection != nil else { return }
+            if frame.isKeyframe {
+                self.waitingForKeyframe = false
+            } else if self.waitingForKeyframe {
+                return
+            }
+            if self.inFlightFrames >= Self.maxInFlightFrames && !frame.isKeyframe {
+                self.droppedFrames += 1
+                self.waitingForKeyframe = true
+                self.onFrameDropped?()
+                return
+            }
+            self.inFlightFrames += 1
+            let flags: OBSCProtocol.Flags = frame.isKeyframe ? [.keyframe] : []
+            self.sendOnQueue(OBSCProtocol.packet(type: .video,
+                                                 flags: flags,
+                                                 ptsNanoseconds: frame.ptsNanoseconds,
+                                                 payload: frame.data),
+                             isVideoFrame: true)
+        }
     }
 
     private func startPing() {

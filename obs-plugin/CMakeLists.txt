@@ -10,9 +10,18 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # fall back to pkg-config for distro packages.
 find_package(libobs QUIET)
 if(NOT TARGET OBS::libobs)
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(LIBOBS REQUIRED IMPORTED_TARGET GLOBAL libobs)
-  add_library(OBS::libobs ALIAS PkgConfig::LIBOBS)
+  if(LIBOBS_INCLUDE_DIR AND LIBOBS_LIBRARY)
+    # Manual override for builds against an obs-studio source tree
+    # (e.g. Windows CI): -DLIBOBS_INCLUDE_DIR=... -DLIBOBS_LIBRARY=...
+    add_library(libobs-manual INTERFACE)
+    target_include_directories(libobs-manual INTERFACE ${LIBOBS_INCLUDE_DIR})
+    target_link_libraries(libobs-manual INTERFACE ${LIBOBS_LIBRARY})
+    add_library(OBS::libobs ALIAS libobs-manual)
+  else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBOBS REQUIRED IMPORTED_TARGET GLOBAL libobs)
+    add_library(OBS::libobs ALIAS PkgConfig::LIBOBS)
+  endif()
 endif()
 
 # --- FFmpeg (libavcodec / libavutil) ---------------------------------------
@@ -39,9 +48,13 @@ add_library(${PROJECT_NAME} MODULE
   src/plugin-main.c
   src/ios-camera-source.c
   src/h264-decoder.c
+  src/usbmux.c
+  src/web-control.c
   src/protocol.h
+  src/web-control.h
   src/net-compat.h
   src/h264-decoder.h
+  src/usbmux.h
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs ${FFMPEG_TARGET})

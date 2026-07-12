@@ -35,6 +35,71 @@ jobs:
             obs-plugin/build/ios-camera-source.so
             obs-plugin/data/
 
+  obs-plugin-windows:
+    name: OBS plugin (Windows)
+    runs-on: windows-2022
+    env:
+      # Keep in sync with the OBS release users run: the plugin links the
+      # FFmpeg DLLs from this deps bundle, and OBS must ship the same ones.
+      # OBS 32.1.2 pins obs-deps 2025-08-23 (see its CMakePresets.json).
+      OBS_REF: "32.1.2"
+      DEPS_TAG: "2025-08-23"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout obs-studio (for libobs)
+        uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_REF }}
+          path: obs-studio
+          submodules: recursive
+
+      - name: Download OBS prebuilt dependencies (FFmpeg)
+        run: |
+          curl -L -o deps.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-${{ env.DEPS_TAG }}-x64.zip"
+          7z x deps.zip -oobs-deps
+
+      - name: Cache libobs build
+        id: cache-libobs
+        uses: actions/cache@v4
+        with:
+          path: obs-build
+          key: libobs-${{ env.OBS_REF }}-${{ env.DEPS_TAG }}
+
+      - name: Build libobs
+        if: steps.cache-libobs.outputs.cache-hit != 'true'
+        run: |
+          cmake -S obs-studio -B obs-build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
+            -DENABLE_UI=OFF -DENABLE_FRONTEND=OFF -DENABLE_PLUGINS=OFF `
+            -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF -DENABLE_WEBSOCKET=OFF `
+            -DENABLE_AJA=OFF
+          cmake --build obs-build --target libobs --config Release
+
+      - name: Build plugin
+        run: |
+          cmake -S obs-plugin -B plugin-build -G "Visual Studio 17 2022" -A x64 `
+            -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config;${{ github.workspace }}\obs-studio\deps\w32-pthreads" `
+            -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib;${{ github.workspace }}\obs-build\deps\w32-pthreads\Release\w32-pthreads.lib" `
+            -DFFMPEG_INCLUDE_DIR="${{ github.workspace }}\obs-deps\include" `
+            -DAVCODEC_LIBRARY="${{ github.workspace }}\obs-deps\lib\avcodec.lib" `
+            -DAVUTIL_LIBRARY="${{ github.workspace }}\obs-deps\lib\avutil.lib"
+          cmake --build plugin-build --config Release
+
+      - name: Package (drop into C:\Program Files\obs-studio)
+        run: |
+          New-Item -ItemType Directory -Force -Path stage\obs-plugins\64bit | Out-Null
+          New-Item -ItemType Directory -Force -Path stage\data\obs-plugins\ios-camera-source | Out-Null
+          Copy-Item plugin-build\Release\ios-camera-source.dll stage\obs-plugins\64bit\
+          Copy-Item -Recurse obs-plugin\data\* stage\data\obs-plugins\ios-camera-source\
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-camera-source-windows-x64
+          path: stage/
+
   ios-app:
     name: iOS app (OBSCam)
     # Needs Xcode 16+: current XcodeGen emits project format 77, which
@@ -63,3 +128,27 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
         working-directory: ios-app
+
+      # Unsigned device build packaged as an .ipa. It cannot be installed
+      # as-is: sideload it with a tool that re-signs with your Apple ID
+      # (Sideloadly / AltStore on Windows or macOS).
+      - name: Build unsigned device IPA
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OBSCam.xcodeproj \
+            -scheme OBSCam \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO
+          mkdir -p Payload
+          cp -R DerivedData/Build/Products/Release-iphoneos/OBSCam.app Payload/
+          zip -ry OBSCam-unsigned.ipa Payload
+        working-directory: ios-app
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OBSCam-unsigned-ipa
+          path: ios-app/OBSCam-unsigned.ipa

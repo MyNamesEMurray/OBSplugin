@@ -6,6 +6,10 @@ options:
   deploymentTarget:
     iOS: "15.0"
   createIntermediateGroups: true
+  # Keep the generated project openable by older Xcode (14.x). If your
+  # Xcode still complains about a "future project file format", generate
+  # with XcodeGen 2.38.0 instead of the latest (see BUILDING.md).
+  xcodeVersion: "14.2"
 
 targets:
   OBSCam:
@@ -30,7 +34,7 @@ targets:
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"
-        SWIFT_VERSION: "5.9"
+        SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
         # Set your Apple Developer team to run on a device:
         # DEVELOPMENT_TEAM: XXXXXXXXXX

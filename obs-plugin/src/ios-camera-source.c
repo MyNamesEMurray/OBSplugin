@@ -1,10 +1,10 @@
 /*
  * "iOS Camera" async video source.
  *
- * Runs a small TCP server on a background thread. The iOS companion app
- * connects and streams H.264 access units (Annex B) which are decoded with
- * libavcodec and handed to OBS via obs_source_output_video(). A UDP
- * responder on port+1 answers LAN discovery probes from the app.
+ * A background thread connects to the companion app on the device — over
+ * the LAN (phone IP entered in properties) or through usbmuxd (USB cable)
+ * — and receives H.264/HEVC access units (Annex B), decoded via
+ * libavcodec (GPU when available) into obs_source_output_video().
  */
 
 #include <obs-module.h>
@@ -19,9 +19,27 @@
 #include "net-compat.h"
 #include "protocol.h"
 #include "h264-decoder.h"
+#include "usbmux.h"
+#include "web-control.h"
 
-#define S_PORT "port"
+#define WEB_CONTROL_PORT 9980
+
+#define S_MODE "mode"
+#define S_HOST "host"
+#define S_LOW_LATENCY "low_latency"
+#define S_HW_DECODE "hw_decode"
+#define S_AUDIO_SOURCE "audio_sync_source"
+#define S_AUDIO_SYNC "audio_sync_enabled"
+#define S_AUDIO_LATENCY "audio_device_latency_ms"
+#define S_WEB_CONTROL "web_control"
+#define MODE_DIAL "dial"
+#define MODE_USB "usb"
 #define T_(s) obs_module_text(s)
+
+enum connection_mode {
+	CONN_DIAL_NET, /* OBS dials the phone over the LAN */
+	CONN_DIAL_USB, /* OBS dials the phone through usbmuxd */
+};
 
 #define RECV_CHUNK 65536
 
@@ -38,11 +56,41 @@ struct ios_camera_source {
 	bool thread_active;
 	volatile bool stop;
 
-	int port;
+	enum connection_mode conn_mode;
+	char host[128];
+	volatile bool hw_decode;
+
+	/* Guarded by status_mutex (shared with the status string). */
+	bool audio_sync;
+	char audio_source[256];
+	int64_t applied_audio_offset;
+	int audio_device_latency_ms;
+
+	/* Remote-control commands queued for the device (JSON strings),
+	 * pushed by the web control thread, drained by the stream thread.
+	 * Guarded by status_mutex. */
+#define CONTROL_QUEUE_MAX 16
+	char *control_queue[CONTROL_QUEUE_MAX];
+	int control_count;
+
+	bool web_enabled;
+	struct web_control *web;
+
+	/* Latest camera-state JSON reported by the app (for remote UIs).
+	 * Guarded by status_mutex. */
+	char device_state[1024];
 
 	pthread_mutex_t status_mutex;
 	struct dstr status;
 };
+
+static enum connection_mode parse_mode(const char *mode)
+{
+	if (strcmp(mode, MODE_USB) == 0)
+		return CONN_DIAL_USB;
+	/* Includes configs saved by the removed phone-dials-OBS mode. */
+	return CONN_DIAL_NET;
+}
 
 /* ------------------------------------------------------------------ */
 
@@ -56,6 +104,42 @@ static void set_status(struct ios_camera_source *s, const char *fmt, ...)
 	pthread_mutex_unlock(&s->status_mutex);
 
 	va_end(args);
+}
+
+void ios_camera_enqueue_control(struct ios_camera_source *s, const char *json,
+				size_t len)
+{
+	char *copy = bmalloc(len + 1);
+	memcpy(copy, json, len);
+	copy[len] = 0;
+
+	pthread_mutex_lock(&s->status_mutex);
+	if (s->control_count >= CONTROL_QUEUE_MAX) {
+		/* Full: drop the oldest command. */
+		bfree(s->control_queue[0]);
+		memmove(&s->control_queue[0], &s->control_queue[1],
+			sizeof(char *) * (CONTROL_QUEUE_MAX - 1));
+		s->control_count--;
+	}
+	s->control_queue[s->control_count++] = copy;
+	pthread_mutex_unlock(&s->status_mutex);
+}
+
+void ios_camera_copy_status(struct ios_camera_source *s, char *buf,
+			    size_t size)
+{
+	pthread_mutex_lock(&s->status_mutex);
+	snprintf(buf, size, "%s", s->status.array ? s->status.array : "");
+	pthread_mutex_unlock(&s->status_mutex);
+}
+
+void ios_camera_copy_state(struct ios_camera_source *s, char *buf,
+			   size_t size)
+{
+	pthread_mutex_lock(&s->status_mutex);
+	snprintf(buf, size, "%s",
+		 s->device_state[0] ? s->device_state : "{}");
+	pthread_mutex_unlock(&s->status_mutex);
 }
 
 static void recv_buf_free(struct recv_buf *b)
@@ -90,91 +174,206 @@ static void recv_buf_consume(struct recv_buf *b, size_t size)
 
 /* ------------------------------------------------------------------ */
 
-static socket_t open_tcp_listener(int port)
-{
-	socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (sock == OBSC_INVALID_SOCKET)
-		return sock;
-
-	int yes = 1;
-	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes,
-		   sizeof(yes));
-
-	struct sockaddr_in addr = {0};
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons((uint16_t)port);
-
-	if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
-	    listen(sock, 1) != 0) {
-		net_close(sock);
-		return OBSC_INVALID_SOCKET;
-	}
-
-	net_set_nonblocking(sock);
-	return sock;
-}
-
-static socket_t open_discovery_socket(int port)
-{
-	socket_t sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock == OBSC_INVALID_SOCKET)
-		return sock;
-
-	int yes = 1;
-	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes,
-		   sizeof(yes));
-
-	struct sockaddr_in addr = {0};
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons((uint16_t)(port + OBSC_DISCOVERY_PORT_OFFSET));
-
-	if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-		net_close(sock);
-		return OBSC_INVALID_SOCKET;
-	}
-
-	net_set_nonblocking(sock);
-	return sock;
-}
-
-static void answer_discovery(socket_t sock, int tcp_port)
-{
-	char probe[64];
-	struct sockaddr_in from = {0};
-	socklen_t from_len = sizeof(from);
-
-	int n = (int)recvfrom(sock, probe, sizeof(probe) - 1, 0,
-			      (struct sockaddr *)&from, &from_len);
-	if (n <= 0)
-		return;
-	probe[n] = 0;
-
-	if (strncmp(probe, OBSC_DISCOVER_REQUEST,
-		    strlen(OBSC_DISCOVER_REQUEST)) != 0)
-		return;
-
-	char host[128] = "OBS";
-	gethostname(host, sizeof(host) - 1);
-	host[sizeof(host) - 1] = 0;
-
-	char reply[192];
-	snprintf(reply, sizeof(reply), OBSC_DISCOVER_REPLY_PREFIX "%d:%s",
-		 tcp_port, host);
-
-	sendto(sock, reply, (int)strlen(reply), 0, (struct sockaddr *)&from,
-	       from_len);
-}
+/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
+/* Latency measurement: NTP-style clock offset between the phone's
+ * capture clock and this machine, then per-frame capture→decode time. */
+
+struct latency_tracker {
+	bool have_offset;
+	int64_t offset_ns;   /* phone_clock - plugin_clock */
+	uint64_t offset_rtt; /* RTT of the sample behind offset_ns */
+	uint64_t offset_time;
+
+	uint64_t sum_ns;
+	uint64_t count;
+	uint64_t min_ns;
+	uint64_t max_ns;
+	uint64_t window_start;
+	uint64_t last_sync_send;
+};
+
+static void latency_on_timesync(struct latency_tracker *t, uint64_t t1,
+				uint64_t t2, uint64_t t3)
+{
+	if (t3 <= t1)
+		return;
+
+	uint64_t rtt = t3 - t1;
+	int64_t offset = (int64_t)t2 - (int64_t)((t1 + t3) / 2);
+
+	/* Prefer low-RTT samples (least asymmetry error), but refresh
+	 * periodically anyway so clock drift can't accumulate. */
+	bool stale = t3 - t->offset_time > 10000000000ULL;
+	if (!t->have_offset || rtt <= t->offset_rtt || stale) {
+		t->have_offset = true;
+		t->offset_ns = offset;
+		t->offset_rtt = rtt;
+		t->offset_time = t3;
+	}
+}
+
+static void latency_on_frame(struct latency_tracker *t, uint64_t pts_phone_ns,
+			     uint64_t now_ns)
+{
+	if (!t->have_offset)
+		return;
+
+	int64_t captured_local =
+		(int64_t)pts_phone_ns - t->offset_ns;
+	int64_t lat = (int64_t)now_ns - captured_local;
+	if (lat < 0)
+		lat = 0;
+
+	uint64_t l = (uint64_t)lat;
+	if (!t->count || l < t->min_ns)
+		t->min_ns = l;
+	if (!t->count || l > t->max_ns)
+		t->max_ns = l;
+	t->sum_ns += l;
+	t->count++;
+	if (!t->window_start)
+		t->window_start = now_ns;
+}
 
 struct client_state {
 	socket_t sock;
 	struct recv_buf buf;
 	struct h264_decoder *decoder;
+	bool hw_failed; /* GPU decode failed once: stay on software */
+	enum AVCodecID codec_id;
 	char name[128];
+	struct latency_tracker lat;
 };
+
+/*
+ * Lip sync: keep the chosen OBS audio source's sync offset equal to the
+ * measured camera latency, so audio is delayed to match the video.
+ * 5 ms hysteresis avoids constantly rewriting a stable value.
+ */
+static void apply_audio_sync(struct ios_camera_source *s, int64_t latency_ns)
+{
+	char name[256];
+
+	pthread_mutex_lock(&s->status_mutex);
+	bool enabled = s->audio_sync;
+	snprintf(name, sizeof(name), "%s", s->audio_source);
+	int64_t applied = s->applied_audio_offset;
+	int64_t device_latency_ns =
+		(int64_t)s->audio_device_latency_ms * 1000000;
+	pthread_mutex_unlock(&s->status_mutex);
+
+	if (!enabled || !name[0])
+		return;
+
+	/* The audio device has its own capture latency; the delay we add
+	 * only needs to cover the difference. */
+	latency_ns -= device_latency_ns;
+	if (latency_ns < 0)
+		latency_ns = 0;
+
+	int64_t diff = latency_ns - applied;
+	if (diff < 0)
+		diff = -diff;
+	if (diff < 5000000)
+		return;
+
+	obs_source_t *audio = obs_get_source_by_name(name);
+	if (!audio)
+		return;
+	obs_source_set_sync_offset(audio, latency_ns);
+	obs_source_release(audio);
+
+	pthread_mutex_lock(&s->status_mutex);
+	s->applied_audio_offset = latency_ns;
+	pthread_mutex_unlock(&s->status_mutex);
+
+	blog(LOG_INFO, "[ios-camera] '%s' sync offset -> %d ms", name,
+	     (int)(latency_ns / 1000000));
+}
+
+/* Forward queued remote-control commands to the device. */
+static void control_tick(struct ios_camera_source *s, struct client_state *c)
+{
+	char *pending[CONTROL_QUEUE_MAX];
+	int count;
+
+	pthread_mutex_lock(&s->status_mutex);
+	count = s->control_count;
+	memcpy(pending, s->control_queue, sizeof(char *) * (size_t)count);
+	s->control_count = 0;
+	pthread_mutex_unlock(&s->status_mutex);
+
+	for (int i = 0; i < count; i++) {
+		size_t len = strlen(pending[i]);
+		size_t total = OBSC_HEADER_SIZE + len;
+		uint8_t *packet = bmalloc(total);
+		obsc_build_header(packet, OBSC_PKT_CONTROL, 0, 0,
+				  (uint32_t)len);
+		memcpy(packet + OBSC_HEADER_SIZE, pending[i], len);
+
+		size_t sent = 0;
+		int spins = 0;
+		while (sent < total && spins < 100) {
+			int n = (int)send(c->sock,
+					  (const char *)packet + sent,
+					  (int)(total - sent), 0);
+			if (n > 0) {
+				sent += (size_t)n;
+			} else {
+				os_sleep_ms(1);
+				spins++;
+			}
+		}
+
+		bfree(packet);
+		bfree(pending[i]);
+	}
+}
+
+/* Once a second, ask the phone for a clock sample; every five, report. */
+static void latency_tick(struct ios_camera_source *s, struct client_state *c)
+{
+	uint64_t now = os_gettime_ns();
+	struct latency_tracker *t = &c->lat;
+
+	if (now - t->last_sync_send > 1000000000ULL) {
+		t->last_sync_send = now;
+		uint8_t hdr[OBSC_HEADER_SIZE];
+		obsc_build_header(hdr, OBSC_PKT_TIMESYNC_REQ, 0, now, 0);
+		/* Best effort; a 20-byte send into an open socket either
+		 * fully succeeds or the connection is toast anyway. */
+		send(c->sock, (const char *)hdr, OBSC_HEADER_SIZE, 0);
+	}
+
+	if (t->count && t->window_start &&
+	    now - t->window_start > 5000000000ULL) {
+		unsigned avg_ms = (unsigned)(t->sum_ns / t->count / 1000000);
+		unsigned min_ms = (unsigned)(t->min_ns / 1000000);
+		unsigned max_ms = (unsigned)(t->max_ns / 1000000);
+		unsigned rtt_ms = (unsigned)(t->offset_rtt / 1000000);
+
+		blog(LOG_INFO,
+		     "[ios-camera] capture->decode latency: avg %u ms "
+		     "(min %u / max %u), link rtt %u ms, %u frames",
+		     avg_ms, min_ms, max_ms, rtt_ms, (unsigned)t->count);
+		set_status(s, "%s %s — ~%u ms", T_("Status.Connected"),
+			   c->name[0] ? c->name : "iOS device", avg_ms);
+
+		/* Only steer audio sync from stable measurements: a
+		 * congested link makes latency oscillate wildly, and
+		 * chasing it would yank the mic delay around. */
+		bool stable = (t->max_ns - t->min_ns) < 60000000ULL &&
+			      t->offset_rtt < 50000000ULL;
+		if (stable)
+			apply_audio_sync(s, (int64_t)(t->sum_ns / t->count));
+
+		t->sum_ns = 0;
+		t->count = 0;
+		t->window_start = now;
+	}
+}
 
 static void client_disconnect(struct ios_camera_source *s,
 			      struct client_state *c)
@@ -191,7 +390,11 @@ static void client_disconnect(struct ios_camera_source *s,
 	/* Clear the last frame so the source goes blank when the phone
 	 * disconnects instead of freezing on a stale image. */
 	obs_source_output_video(s->source, NULL);
-	set_status(s, "%s (%d)", T_("Status.Listening"), s->port);
+
+	pthread_mutex_lock(&s->status_mutex);
+	s->device_state[0] = 0;
+	pthread_mutex_unlock(&s->status_mutex);
+	set_status(s, "%s", T_("Status.Disconnected"));
 }
 
 static void extract_json_string(const char *json, const char *key, char *out,
@@ -239,28 +442,77 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			   c->name[0] ? c->name : "iOS device");
 		break;
 	}
-	case OBSC_PKT_VIDEO_CONFIG:
+	case OBSC_PKT_VIDEO_CONFIG: {
 		blog(LOG_INFO, "[ios-camera] video config: %.*s",
 		     (int)hdr->payload_size, (const char *)payload);
+
+		char json[512] = {0};
+		size_t n = hdr->payload_size < sizeof(json) - 1
+				   ? hdr->payload_size
+				   : sizeof(json) - 1;
+		memcpy(json, payload, n);
+
+		char codec[32] = {0};
+		extract_json_string(json, "codec", codec, sizeof(codec));
+		enum AVCodecID id = strcmp(codec, "hevc") == 0
+					    ? AV_CODEC_ID_HEVC
+					    : AV_CODEC_ID_H264;
+		if (id != c->codec_id) {
+			h264_decoder_destroy(c->decoder);
+			c->decoder = NULL;
+			c->codec_id = id;
+		}
 		break;
+	}
 	case OBSC_PKT_VIDEO:
 		if (!c->decoder) {
 			/* Join on a keyframe so the decoder starts clean. */
 			if (!(hdr->flags & OBSC_FLAG_KEYFRAME))
 				break;
-			c->decoder = h264_decoder_create();
+			c->decoder = h264_decoder_create(
+				c->codec_id != AV_CODEC_ID_NONE
+					? c->codec_id
+					: AV_CODEC_ID_H264,
+				s->hw_decode && !c->hw_failed);
 			if (!c->decoder)
 				return false;
 		}
 		if (!h264_decoder_decode(c->decoder, s->source, payload,
 					 hdr->payload_size, hdr->pts_ns)) {
-			blog(LOG_WARNING,
-			     "[ios-camera] decoder error, resetting");
+			if (h264_decoder_is_hw(c->decoder)) {
+				/* GPU path misbehaved: recreate in software
+				 * for the rest of this connection. */
+				blog(LOG_WARNING,
+				     "[ios-camera] hardware decode error, "
+				     "switching to software");
+				c->hw_failed = true;
+			} else {
+				blog(LOG_WARNING,
+				     "[ios-camera] decoder error, resetting");
+			}
 			h264_decoder_destroy(c->decoder);
 			c->decoder = NULL;
+			break;
 		}
+		latency_on_frame(&c->lat, hdr->pts_ns, os_gettime_ns());
 		break;
 	case OBSC_PKT_PING:
+		break;
+	case OBSC_PKT_STATE: {
+		pthread_mutex_lock(&s->status_mutex);
+		size_t n = hdr->payload_size < sizeof(s->device_state) - 1
+				   ? hdr->payload_size
+				   : sizeof(s->device_state) - 1;
+		memcpy(s->device_state, payload, n);
+		s->device_state[n] = 0;
+		pthread_mutex_unlock(&s->status_mutex);
+		break;
+	}
+	case OBSC_PKT_TIMESYNC_RESP:
+		if (hdr->payload_size >= 8) {
+			latency_on_timesync(&c->lat, obsc_read_u64(payload),
+					    hdr->pts_ns, os_gettime_ns());
+		}
 		break;
 	default:
 		blog(LOG_WARNING, "[ios-camera] unknown packet type %d",
@@ -274,8 +526,14 @@ static bool client_read(struct ios_camera_source *s, struct client_state *c)
 {
 	uint8_t chunk[RECV_CHUNK];
 	int n = (int)recv(c->sock, (char *)chunk, sizeof(chunk), 0);
-	if (n <= 0)
+	if (n == 0) {
+		blog(LOG_INFO, "[ios-camera] connection closed by device");
 		return false;
+	}
+	if (n < 0) {
+		blog(LOG_INFO, "[ios-camera] recv error %d", net_last_error());
+		return false;
+	}
 
 	recv_buf_append(&c->buf, chunk, (size_t)n);
 
@@ -301,87 +559,125 @@ static bool client_read(struct ios_camera_source *s, struct client_state *c)
 	return true;
 }
 
+/* TCP connect with a 3-second timeout; returns a non-blocking socket. */
+static socket_t tcp_dial(const char *host, uint16_t port)
+{
+	char port_str[16];
+	snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+
+	struct addrinfo hints = {0};
+	struct addrinfo *res = NULL;
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+	if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res)
+		return OBSC_INVALID_SOCKET;
+
+	socket_t s = socket(res->ai_family, res->ai_socktype,
+			    res->ai_protocol);
+	if (s == OBSC_INVALID_SOCKET) {
+		freeaddrinfo(res);
+		return OBSC_INVALID_SOCKET;
+	}
+
+	net_set_nonblocking(s);
+	int ret = connect(s, res->ai_addr, (int)res->ai_addrlen);
+	freeaddrinfo(res);
+
+	if (ret != 0) {
+#ifdef _WIN32
+		if (WSAGetLastError() != WSAEWOULDBLOCK)
+			goto fail;
+#else
+		if (errno != EINPROGRESS)
+			goto fail;
+#endif
+		fd_set wfds;
+		FD_ZERO(&wfds);
+		FD_SET(s, &wfds);
+		struct timeval tv = {.tv_sec = 3, .tv_usec = 0};
+		if (select((int)s + 1, NULL, &wfds, NULL, &tv) != 1)
+			goto fail;
+
+		int err = 0;
+		socklen_t len = sizeof(err);
+		getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
+		if (err != 0)
+			goto fail;
+	}
+
+	int yes = 1;
+	setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&yes,
+		   sizeof(yes));
+	return s;
+
+fail:
+	net_close(s);
+	return OBSC_INVALID_SOCKET;
+}
+
+/*
+ * Dial modes: the app on the device listens; we connect to it — over the
+ * LAN (host set in properties) or through usbmuxd. Retry every couple of
+ * seconds until the app is reachable.
+ */
+static void dial_loop(struct ios_camera_source *s)
+{
+	bool usb = s->conn_mode == CONN_DIAL_USB;
+
+	while (!s->stop) {
+		socket_t sock = OBSC_INVALID_SOCKET;
+
+		if (usb) {
+			set_status(s, "%s", T_("Status.WaitingUSB"));
+			sock = usbmux_connect_first(OBSC_USB_PORT);
+		} else if (!s->host[0]) {
+			set_status(s, "%s", T_("Status.NoHost"));
+		} else {
+			set_status(s, "%s %s", T_("Status.Dialing"), s->host);
+			sock = tcp_dial(s->host, OBSC_USB_PORT);
+		}
+
+		if (sock == OBSC_INVALID_SOCKET) {
+			for (int i = 0; i < 20 && !s->stop; i++)
+				os_sleep_ms(100);
+			continue;
+		}
+
+		blog(LOG_INFO, "[ios-camera] connected to device (%s)",
+		     usb ? "USB" : "network");
+		set_status(s, "%s", T_("Status.Connected"));
+
+		struct client_state client = {.sock = sock};
+
+		while (!s->stop) {
+			fd_set fds;
+			FD_ZERO(&fds);
+			FD_SET(sock, &fds);
+			struct timeval tv = {.tv_sec = 0,
+					     .tv_usec = 200 * 1000};
+			int ret = select((int)sock + 1, &fds, NULL, NULL, &tv);
+			if (ret < 0)
+				break;
+			latency_tick(s, &client);
+			control_tick(s, &client);
+			if (ret == 0)
+				continue;
+			if (!client_read(s, &client))
+				break;
+		}
+
+		blog(LOG_INFO, "[ios-camera] device connection ended");
+		client_disconnect(s, &client);
+	}
+}
+
 static void *server_thread(void *data)
 {
 	struct ios_camera_source *s = data;
 
 	os_set_thread_name("ios-camera-server");
 
-	socket_t listener = open_tcp_listener(s->port);
-	socket_t discovery = open_discovery_socket(s->port);
-	struct client_state client = {.sock = OBSC_INVALID_SOCKET};
-
-	if (listener == OBSC_INVALID_SOCKET) {
-		blog(LOG_ERROR, "[ios-camera] failed to listen on port %d",
-		     s->port);
-		set_status(s, "%s (%d)", T_("Status.PortError"), s->port);
-	} else {
-		blog(LOG_INFO, "[ios-camera] listening on port %d", s->port);
-		set_status(s, "%s (%d)", T_("Status.Listening"), s->port);
-	}
-
-	while (!s->stop && listener != OBSC_INVALID_SOCKET) {
-		fd_set fds;
-		FD_ZERO(&fds);
-		FD_SET(listener, &fds);
-		socket_t max_fd = listener;
-
-		if (discovery != OBSC_INVALID_SOCKET) {
-			FD_SET(discovery, &fds);
-			if (discovery > max_fd)
-				max_fd = discovery;
-		}
-		if (client.sock != OBSC_INVALID_SOCKET) {
-			FD_SET(client.sock, &fds);
-			if (client.sock > max_fd)
-				max_fd = client.sock;
-		}
-
-		struct timeval tv = {.tv_sec = 0, .tv_usec = 200 * 1000};
-		int ret = select((int)max_fd + 1, &fds, NULL, NULL, &tv);
-		if (ret < 0)
-			break;
-		if (ret == 0)
-			continue;
-
-		if (discovery != OBSC_INVALID_SOCKET &&
-		    FD_ISSET(discovery, &fds))
-			answer_discovery(discovery, s->port);
-
-		if (FD_ISSET(listener, &fds)) {
-			struct sockaddr_in from;
-			socklen_t from_len = sizeof(from);
-			socket_t accepted = accept(
-				listener, (struct sockaddr *)&from, &from_len);
-			if (accepted != OBSC_INVALID_SOCKET) {
-				/* Newest connection wins; drop the old one. */
-				if (client.sock != OBSC_INVALID_SOCKET)
-					client_disconnect(s, &client);
-				net_set_nonblocking(accepted);
-				int yes = 1;
-				setsockopt(accepted, IPPROTO_TCP, TCP_NODELAY,
-					   (const char *)&yes, sizeof(yes));
-				client.sock = accepted;
-				set_status(s, "%s", T_("Status.Connected"));
-			}
-		}
-
-		if (client.sock != OBSC_INVALID_SOCKET &&
-		    FD_ISSET(client.sock, &fds)) {
-			if (!client_read(s, &client)) {
-				blog(LOG_INFO,
-				     "[ios-camera] client disconnected");
-				client_disconnect(s, &client);
-			}
-		}
-	}
-
-	if (client.sock != OBSC_INVALID_SOCKET)
-		client_disconnect(s, &client);
-	if (listener != OBSC_INVALID_SOCKET)
-		net_close(listener);
-	if (discovery != OBSC_INVALID_SOCKET)
-		net_close(discovery);
+	dial_loop(s);
 
 	return NULL;
 }
@@ -417,11 +713,54 @@ static const char *ios_camera_get_name(void *unused)
 static void ios_camera_update(void *data, obs_data_t *settings)
 {
 	struct ios_camera_source *s = data;
-	int port = (int)obs_data_get_int(settings, S_PORT);
+	enum connection_mode mode =
+		parse_mode(obs_data_get_string(settings, S_MODE));
+	const char *host = obs_data_get_string(settings, S_HOST);
 
-	if (port != s->port) {
+	/* Unbuffered async video: render the newest frame immediately
+	 * instead of letting OBS smooth timestamps with a frame queue. */
+	obs_source_set_async_unbuffered(
+		s->source, obs_data_get_bool(settings, S_LOW_LATENCY));
+	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
+
+	pthread_mutex_lock(&s->status_mutex);
+	bool was_syncing = s->audio_sync && s->audio_source[0];
+	int64_t applied = s->applied_audio_offset;
+	char old_source[256];
+	snprintf(old_source, sizeof(old_source), "%s", s->audio_source);
+
+	s->audio_sync = obs_data_get_bool(settings, S_AUDIO_SYNC);
+	s->audio_device_latency_ms =
+		(int)obs_data_get_int(settings, S_AUDIO_LATENCY);
+	snprintf(s->audio_source, sizeof(s->audio_source), "%s",
+		 obs_data_get_string(settings, S_AUDIO_SOURCE));
+	bool still_syncing = s->audio_sync &&
+			     strcmp(old_source, s->audio_source) == 0;
+	if (!still_syncing)
+		s->applied_audio_offset = 0;
+	pthread_mutex_unlock(&s->status_mutex);
+
+	bool web = obs_data_get_bool(settings, S_WEB_CONTROL);
+	if (web && !s->web)
+		s->web = web_control_start(s, WEB_CONTROL_PORT);
+	else if (!web && s->web) {
+		web_control_stop(s->web);
+		s->web = NULL;
+	}
+
+	/* Turned off (or retargeted): undo the offset we applied. */
+	if (was_syncing && !still_syncing && applied != 0) {
+		obs_source_t *audio = obs_get_source_by_name(old_source);
+		if (audio) {
+			obs_source_set_sync_offset(audio, 0);
+			obs_source_release(audio);
+		}
+	}
+
+	if (mode != s->conn_mode || strcmp(host, s->host) != 0) {
 		stop_thread(s);
-		s->port = port;
+		s->conn_mode = mode;
+		snprintf(s->host, sizeof(s->host), "%s", host);
 		start_thread(s);
 	}
 }
@@ -430,7 +769,19 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct ios_camera_source *s = bzalloc(sizeof(*s));
 	s->source = source;
-	s->port = (int)obs_data_get_int(settings, S_PORT);
+	s->conn_mode = parse_mode(obs_data_get_string(settings, S_MODE));
+	snprintf(s->host, sizeof(s->host), "%s",
+		 obs_data_get_string(settings, S_HOST));
+	obs_source_set_async_unbuffered(
+		source, obs_data_get_bool(settings, S_LOW_LATENCY));
+	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
+	s->audio_sync = obs_data_get_bool(settings, S_AUDIO_SYNC);
+	s->audio_device_latency_ms =
+		(int)obs_data_get_int(settings, S_AUDIO_LATENCY);
+	snprintf(s->audio_source, sizeof(s->audio_source), "%s",
+		 obs_data_get_string(settings, S_AUDIO_SOURCE));
+	if (obs_data_get_bool(settings, S_WEB_CONTROL))
+		s->web = web_control_start(s, WEB_CONTROL_PORT);
 
 	pthread_mutex_init(&s->status_mutex, NULL);
 	dstr_init(&s->status);
@@ -443,7 +794,10 @@ static void ios_camera_destroy(void *data)
 {
 	struct ios_camera_source *s = data;
 
+	web_control_stop(s->web);
 	stop_thread(s);
+	for (int i = 0; i < s->control_count; i++)
+		bfree(s->control_queue[i]);
 	dstr_free(&s->status);
 	pthread_mutex_destroy(&s->status_mutex);
 	bfree(s);
@@ -451,7 +805,36 @@ static void ios_camera_destroy(void *data)
 
 static void ios_camera_get_defaults(obs_data_t *settings)
 {
-	obs_data_set_default_int(settings, S_PORT, OBSC_DEFAULT_PORT);
+	obs_data_set_default_string(settings, S_MODE, MODE_DIAL);
+	obs_data_set_default_string(settings, S_HOST, "");
+	obs_data_set_default_bool(settings, S_LOW_LATENCY, true);
+	obs_data_set_default_bool(settings, S_HW_DECODE, true);
+	obs_data_set_default_bool(settings, S_AUDIO_SYNC, false);
+	obs_data_set_default_string(settings, S_AUDIO_SOURCE, "");
+	obs_data_set_default_int(settings, S_AUDIO_LATENCY, 0);
+	obs_data_set_default_bool(settings, S_WEB_CONTROL, true);
+}
+
+static bool add_audio_source(void *data, obs_source_t *source)
+{
+	obs_property_t *list = data;
+	if (obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO)
+		obs_property_list_add_string(list,
+					     obs_source_get_name(source),
+					     obs_source_get_name(source));
+	return true;
+}
+
+static bool mode_modified(obs_properties_t *props, obs_property_t *property,
+			  obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+
+	enum connection_mode mode =
+		parse_mode(obs_data_get_string(settings, S_MODE));
+	obs_property_set_visible(obs_properties_get(props, S_HOST),
+				 mode == CONN_DIAL_NET);
+	return true;
 }
 
 static obs_properties_t *ios_camera_get_properties(void *data)
@@ -460,7 +843,28 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 
 	obs_properties_t *props = obs_properties_create();
 
-	obs_properties_add_int(props, S_PORT, T_("Port"), 1024, 65535, 1);
+	obs_property_t *mode = obs_properties_add_list(
+		props, S_MODE, T_("Mode"), OBS_COMBO_TYPE_LIST,
+		OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(mode, T_("Mode.Dial"), MODE_DIAL);
+	obs_property_list_add_string(mode, T_("Mode.USB"), MODE_USB);
+	obs_property_set_modified_callback(mode, mode_modified);
+
+	obs_properties_add_text(props, S_HOST, T_("Host"), OBS_TEXT_DEFAULT);
+	obs_properties_add_bool(props, S_LOW_LATENCY, T_("LowLatency"));
+	obs_properties_add_bool(props, S_HW_DECODE, T_("HwDecode"));
+
+	obs_property_t *audio_list = obs_properties_add_list(
+		props, S_AUDIO_SOURCE, T_("AudioSource"), OBS_COMBO_TYPE_LIST,
+		OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(audio_list, T_("AudioSource.None"), "");
+	obs_enum_sources(add_audio_source, audio_list);
+	obs_properties_add_bool(props, S_AUDIO_SYNC, T_("AudioSync"));
+	obs_property_t *audio_lat = obs_properties_add_int(
+		props, S_AUDIO_LATENCY, T_("AudioLatency"), 0, 500, 1);
+	obs_property_int_set_suffix(audio_lat, " ms");
+
+	obs_properties_add_bool(props, S_WEB_CONTROL, T_("WebControl"));
 
 	obs_property_t *status = obs_properties_add_text(
 		props, "status_info", T_("Status"), OBS_TEXT_INFO);

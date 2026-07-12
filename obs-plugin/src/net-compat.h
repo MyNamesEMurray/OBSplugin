@@ -35,6 +35,7 @@ static inline void net_shutdown(void)
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -58,6 +59,15 @@ static inline void net_shutdown(void)
 
 #endif
 
+static inline int net_last_error(void)
+{
+#ifdef _WIN32
+	return WSAGetLastError();
+#else
+	return errno;
+#endif
+}
+
 static inline bool net_set_nonblocking(socket_t s)
 {
 #ifdef _WIN32
@@ -68,5 +78,20 @@ static inline bool net_set_nonblocking(socket_t s)
 	if (flags < 0)
 		return false;
 	return fcntl(s, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
+/* Windows sockets accepted from a non-blocking listener inherit
+ * non-blocking mode; use this to restore blocking I/O on them. */
+static inline bool net_set_blocking(socket_t s)
+{
+#ifdef _WIN32
+	u_long mode = 0;
+	return ioctlsocket(s, FIONBIO, &mode) == 0;
+#else
+	int flags = fcntl(s, F_GETFL, 0);
+	if (flags < 0)
+		return false;
+	return fcntl(s, F_SETFL, flags & ~O_NONBLOCK) == 0;
 #endif
 }
