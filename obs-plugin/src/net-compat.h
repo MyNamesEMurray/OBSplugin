@@ -80,3 +80,18 @@ static inline bool net_set_nonblocking(socket_t s)
 	return fcntl(s, F_SETFL, flags | O_NONBLOCK) == 0;
 #endif
 }
+
+/* Windows sockets accepted from a non-blocking listener inherit
+ * non-blocking mode; use this to restore blocking I/O on them. */
+static inline bool net_set_blocking(socket_t s)
+{
+#ifdef _WIN32
+	u_long mode = 0;
+	return ioctlsocket(s, FIONBIO, &mode) == 0;
+#else
+	int flags = fcntl(s, F_GETFL, 0);
+	if (flags < 0)
+		return false;
+	return fcntl(s, F_SETFL, flags & ~O_NONBLOCK) == 0;
+#endif
+}

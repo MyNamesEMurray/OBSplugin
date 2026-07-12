@@ -149,6 +149,9 @@ static void handle_client(struct web_control *wc, socket_t client)
 	size_t have = 0;
 	const char *body = NULL;
 
+	/* On Windows the accepted socket inherits the listener's
+	 * non-blocking mode; this handler needs blocking reads. */
+	net_set_blocking(client);
 	set_timeouts(client, 2);
 
 	/* Read until end of headers. */
