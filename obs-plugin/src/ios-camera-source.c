@@ -78,6 +78,11 @@ struct ios_camera_source {
 	pthread_mutex_t lipsync_mutex;
 	obs_weak_source_t *hooked_audio;
 
+	/* Recent accepted mic-delay measurements (network thread only), for
+	 * median smoothing before applying an offset. */
+	int64_t cal_hist[5];
+	int cal_count;
+
 	/* Remote-control commands queued for the device (JSON strings),
 	 * pushed by the web control thread, drained by the stream thread.
 	 * Guarded by status_mutex. */
@@ -309,9 +314,22 @@ static void hook_audio(struct ios_camera_source *s, const char *name)
 	obs_source_release(src);
 }
 
-/* Cross-correlation result drives the offset: delay the mic by the video
- * latency minus the mic's own measured latency. Holds the last value when
- * confidence is low (silence). */
+#define CAL_MIN_CONFIDENCE 0.5
+#define CAL_NS_MS 1000000LL
+
+static int cmp_i64(const void *a, const void *b)
+{
+	int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+	return (x > y) - (x < y);
+}
+
+/*
+ * Cross-correlation result drives the offset. A single measurement is
+ * noisy, so we gate on confidence and smooth over recent measurements
+ * (median of the last few, only when they agree) before applying. Then
+ * offset = videoLatency - micLatency; if the mic is actually slower than
+ * the video path, audio delay can't help and we say so.
+ */
 static void apply_auto_calibrated(struct ios_camera_source *s,
 				  int64_t video_latency_ns)
 {
@@ -332,34 +350,88 @@ static void apply_auto_calibrated(struct ios_camera_source *s,
 	bool ok = s->lipsync &&
 		  lipsync_estimate(s->lipsync, &mic_delay, &conf);
 	pthread_mutex_unlock(&s->lipsync_mutex);
-	if (!ok)
-		return;
 
-	int64_t offset = video_latency_ns - mic_delay;
-	if (offset < 0)
+	if (!ok) {
+		blog(LOG_INFO,
+		     "[ios-camera] auto lip-sync: no reading (need the app's "
+		     "'Auto lip-sync reference' on, plus speech/sound)");
+		return;
+	}
+	if (conf < CAL_MIN_CONFIDENCE) {
+		blog(LOG_INFO,
+		     "[ios-camera] auto lip-sync: mic ~%d ms but low "
+		     "confidence %.2f — ignoring (keep talking / raise mic "
+		     "level)",
+		     (int)(mic_delay / CAL_NS_MS), conf);
+		return;
+	}
+
+	/* Accumulate confident readings; require agreement before acting. */
+	int n = s->cal_count < 5 ? s->cal_count : 5;
+	if (n == 5)
+		memmove(&s->cal_hist[0], &s->cal_hist[1], sizeof(int64_t) * 4);
+	s->cal_hist[n < 5 ? n : 4] = mic_delay;
+	if (s->cal_count < 5)
+		s->cal_count++;
+
+	if (s->cal_count < 3) {
+		blog(LOG_INFO,
+		     "[ios-camera] auto lip-sync: mic ~%d ms (conf %.2f), "
+		     "collecting %d/3…",
+		     (int)(mic_delay / CAL_NS_MS), conf, s->cal_count);
+		return;
+	}
+
+	int64_t sorted[5];
+	memcpy(sorted, s->cal_hist, sizeof(int64_t) * (size_t)s->cal_count);
+	qsort(sorted, (size_t)s->cal_count, sizeof(int64_t), cmp_i64);
+	int64_t median = sorted[s->cal_count / 2];
+	int64_t spread = sorted[s->cal_count - 1] - sorted[0];
+
+	if (spread > 40 * CAL_NS_MS) {
+		blog(LOG_INFO,
+		     "[ios-camera] auto lip-sync: readings unstable "
+		     "(spread %d ms) — holding",
+		     (int)(spread / CAL_NS_MS));
+		return;
+	}
+
+	int64_t offset = video_latency_ns - median;
+	bool mic_slower = offset < 0;
+	if (mic_slower)
 		offset = 0;
 
 	int64_t diff = offset - applied;
 	if (diff < 0)
 		diff = -diff;
-	if (diff < 5000000)
-		return;
+	if (diff >= 5 * CAL_NS_MS) {
+		obs_source_t *audio = obs_get_source_by_name(name);
+		if (audio) {
+			obs_source_set_sync_offset(audio, offset);
+			obs_source_release(audio);
+			pthread_mutex_lock(&s->status_mutex);
+			s->applied_audio_offset = offset;
+			pthread_mutex_unlock(&s->status_mutex);
+		}
+	}
 
-	obs_source_t *audio = obs_get_source_by_name(name);
-	if (!audio)
-		return;
-	obs_source_set_sync_offset(audio, offset);
-	obs_source_release(audio);
-
-	pthread_mutex_lock(&s->status_mutex);
-	s->applied_audio_offset = offset;
-	pthread_mutex_unlock(&s->status_mutex);
-
-	blog(LOG_INFO,
-	     "[ios-camera] auto lip-sync: mic %d ms, video %d ms -> "
-	     "offset %d ms (conf %.2f)",
-	     (int)(mic_delay / 1000000), (int)(video_latency_ns / 1000000),
-	     (int)(offset / 1000000), conf);
+	if (mic_slower) {
+		blog(LOG_WARNING,
+		     "[ios-camera] auto lip-sync: mic latency %d ms exceeds "
+		     "video %d ms — audio can't be delayed to match. Add a "
+		     "'Video Delay (Async)' filter of ~%d ms to '%s', or use "
+		     "a lower-latency mic.",
+		     (int)(median / CAL_NS_MS),
+		     (int)(video_latency_ns / CAL_NS_MS),
+		     (int)((median - video_latency_ns) / CAL_NS_MS), name);
+	} else {
+		blog(LOG_INFO,
+		     "[ios-camera] auto lip-sync: mic %d ms, video %d ms -> "
+		     "'%s' offset %d ms (conf %.2f)",
+		     (int)(median / CAL_NS_MS),
+		     (int)(video_latency_ns / CAL_NS_MS), name,
+		     (int)(offset / CAL_NS_MS), conf);
+	}
 }
 
 /*
@@ -904,6 +976,7 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 		if (s->lipsync)
 			lipsync_reset(s->lipsync);
 		pthread_mutex_unlock(&s->lipsync_mutex);
+		s->cal_count = 0;
 	} else if (!want_hook && was_hooked) {
 		unhook_audio(s);
 	}
