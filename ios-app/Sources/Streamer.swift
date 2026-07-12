@@ -64,23 +64,66 @@ final class Streamer: ObservableObject {
 
     // Live camera controls (also driven remotely via CONTROL packets)
     @Published var zoom: CGFloat = 1 {
-        didSet { camera.setZoom(zoom) }
+        didSet {
+            camera.setZoom(zoom)
+            scheduleStateSend()
+        }
     }
     @Published var exposureBias: Float = 0 {
-        didSet { camera.setExposureBias(exposureBias) }
+        didSet {
+            camera.setExposureBias(exposureBias)
+            scheduleStateSend()
+        }
     }
     enum FocusSetting: Equatable {
         case auto
         case locked
     }
     @Published var focusSetting: FocusSetting = .auto {
-        didSet { applyFocus() }
+        didSet {
+            applyFocus()
+            scheduleStateSend()
+        }
     }
     @Published var lensPosition: Float = 0.5 {
-        didSet { if focusSetting == .locked { applyFocus() } }
+        didSet {
+            if focusSetting == .locked { applyFocus() }
+            scheduleStateSend()
+        }
     }
     @Published var torchOn: Bool = false {
-        didSet { camera.setTorch(torchOn) }
+        didSet {
+            camera.setTorch(torchOn)
+            scheduleStateSend()
+        }
+    }
+
+    /// Debounced push of the control state to the plugin (for its web UI).
+    private var stateSendPending = false
+
+    private func scheduleStateSend() {
+        guard isStreaming, !stateSendPending else { return }
+        stateSendPending = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard let self else { return }
+            self.stateSendPending = false
+            guard self.isStreaming else { return }
+            self.client.sendState(self.controlStateSnapshot())
+        }
+    }
+
+    private func controlStateSnapshot() -> [String: Any] {
+        [
+            "zoom": Double(zoom),
+            "maxZoom": Double(camera.maxZoomFactor),
+            "exposureBias": Double(exposureBias),
+            "focusMode": focusSetting == .locked ? "locked" : "auto",
+            "lensPosition": Double(lensPosition),
+            "torch": torchOn,
+            "hasTorch": camera.hasTorch,
+            "camera": useFrontCamera ? "front" : "back",
+        ]
     }
 
     private func applyFocus() {
@@ -313,14 +356,16 @@ final class Streamer: ObservableObject {
                 guard let self, self.isStreaming else { break }
 
                 let dropped = self.client.takeDroppedFrameCount()
-                if dropped > 0 {
+                let sendDelayMs = self.client.takeMaxSendDelayMs()
+                if dropped > 0 || sendDelayMs > 200 {
                     stableSeconds = 0
                     let reduced = max(1_000_000, current * 3 / 4)
                     if reduced < current {
                         current = reduced
                         self.encoder?.setBitrate(current)
-                        print("Adaptive bitrate: link congested "
-                              + "(\(dropped) dropped) -> \(current / 1000) kbps")
+                        print("Adaptive bitrate: congestion (dropped "
+                              + "\(dropped), send delay \(sendDelayMs) ms) "
+                              + "-> \(current / 1000) kbps")
                     }
                 } else if current < target {
                     stableSeconds += 1
@@ -367,8 +412,10 @@ final class Streamer: ObservableObject {
             client.sendVideoConfig(codec: encoder?.codec ?? codec,
                                    width: size.width, height: size.height,
                                    fps: Int32(fps))
-            // Fresh connection: make sure OBS gets a decodable frame ASAP.
+            // Fresh connection: make sure OBS gets a decodable frame ASAP,
+            // and seed the remote UI with the current control state.
             encoder?.requestKeyframe()
+            client.sendState(controlStateSnapshot())
         case .failed, .disconnected:
             // In receive mode the client keeps its listener alive and
             // reports .connecting while waiting for OBS to dial back;

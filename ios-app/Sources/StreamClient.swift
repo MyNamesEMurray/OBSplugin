@@ -268,10 +268,17 @@ final class StreamClient {
 
     private func sendOnQueue(_ data: Data, isVideoFrame: Bool) {
         guard let connection else { return }
+        let enqueuedAt = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         connection.send(content: data, completion: .contentProcessed { [weak self, weak connection] error in
             guard let self else { return }
-            if isVideoFrame && self.inFlightFrames > 0 {
-                self.inFlightFrames -= 1
+            if isVideoFrame {
+                if self.inFlightFrames > 0 {
+                    self.inFlightFrames -= 1
+                }
+                let delay = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - enqueuedAt
+                if delay > self.maxSendDelayNs {
+                    self.maxSendDelayNs = delay
+                }
             }
             // Ignore results from connections we've already abandoned, and
             // our own cancellations — reacting to those poisons the next
@@ -304,6 +311,13 @@ final class StreamClient {
         send(OBSCProtocol.packet(type: .videoConfig, payload: payload))
     }
 
+    /// Reports the app's current camera-control state so remote UIs
+    /// (the plugin's web panel) can stay in sync.
+    func sendState(_ state: [String: Any]) {
+        guard let payload = try? JSONSerialization.data(withJSONObject: state) else { return }
+        send(OBSCProtocol.packet(type: .state, payload: payload))
+    }
+
     /// Called from the encoder's output thread; hops to the network queue
     /// so the in-flight counter stays consistent. If the network can't keep
     /// up, non-keyframes are dropped rather than queued without bound.
@@ -311,11 +325,24 @@ final class StreamClient {
     /// congestion signal for adaptive bitrate.
     private var droppedFrames = 0
 
+    /// Worst send-to-accepted delay since the last check. TCP hides
+    /// congestion in the kernel socket buffer long before our own queue
+    /// fills; the time a send takes to be accepted exposes it.
+    private var maxSendDelayNs: UInt64 = 0
+
     func takeDroppedFrameCount() -> Int {
         queue.sync {
             let count = droppedFrames
             droppedFrames = 0
             return count
+        }
+    }
+
+    func takeMaxSendDelayMs() -> Int {
+        queue.sync {
+            let ns = maxSendDelayNs
+            maxSendDelayNs = 0
+            return Int(ns / 1_000_000)
         }
     }
 

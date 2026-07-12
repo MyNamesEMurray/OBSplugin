@@ -17,6 +17,8 @@ void ios_camera_enqueue_control(struct ios_camera_source *s, const char *json,
 				size_t len);
 void ios_camera_copy_status(struct ios_camera_source *s, char *buf,
 			    size_t size);
+void ios_camera_copy_state(struct ios_camera_source *s, char *buf,
+			   size_t size);
 
 struct web_control *web_control_start(struct ios_camera_source *source,
 				      uint16_t port);

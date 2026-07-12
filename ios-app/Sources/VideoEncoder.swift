@@ -96,8 +96,7 @@ final class VideoEncoder {
         // Don't let the encoder sit on frames internally.
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount,
                              value: NSNumber(value: 1))
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
-                             value: NSNumber(value: bitrate))
+        Self.applyBitrate(bitrate, to: session)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
                              value: NSNumber(value: fps))
         // Keyframe at least every 2 seconds so joins/recoveries are quick.
@@ -113,8 +112,22 @@ final class VideoEncoder {
     /// Adjusts the target bitrate mid-stream (adaptive bitrate).
     func setBitrate(_ bitsPerSecond: Int) {
         guard let session else { return }
+        Self.applyBitrate(bitsPerSecond, to: session)
+    }
+
+    /// Average target plus a HARD cap (1.5x average over 1-second windows).
+    /// Without the cap, hard-to-compress content — e.g. sensor noise
+    /// magnified by digital zoom — overshoots the average enough to
+    /// saturate a Wi-Fi link.
+    private static func applyBitrate(_ bitsPerSecond: Int,
+                                     to session: VTCompressionSession) {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitsPerSecond))
+        let bytesPerSecondCap = bitsPerSecond * 3 / 16 // (bps / 8) * 1.5
+        let limits: [NSNumber] = [NSNumber(value: bytesPerSecondCap),
+                                  NSNumber(value: 1.0)]
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits,
+                             value: limits as CFArray)
     }
 
     func stop() {

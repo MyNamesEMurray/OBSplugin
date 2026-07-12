@@ -88,6 +88,20 @@ Camera remote control. Payload: UTF-8 JSON, one command per packet:
 Unknown commands are ignored, so new ones can be added compatibly. The
 plugin's embedded web panel (http://localhost:9980) generates these.
 
+### 8 — STATE (app → plugin)
+Camera-state snapshot, sent (debounced ~200 ms) whenever a control value
+changes and once on connect. Payload: UTF-8 JSON, e.g.
+
+```json
+{ "zoom": 2.5, "maxZoom": 10, "exposureBias": -0.5,
+  "focusMode": "locked", "lensPosition": 0.4,
+  "torch": true, "hasTorch": true, "camera": "back" }
+```
+
+The plugin caches the latest snapshot and serves it at `/api/state` so
+remote UIs mirror the app (and vice versa) regardless of where a change
+was made.
+
 ## USB transport
 
 The packet protocol is identical over USB; only the transport roles flip.

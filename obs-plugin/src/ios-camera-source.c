@@ -78,6 +78,10 @@ struct ios_camera_source {
 	bool web_enabled;
 	struct web_control *web;
 
+	/* Latest camera-state JSON reported by the app (for remote UIs).
+	 * Guarded by status_mutex. */
+	char device_state[1024];
+
 	pthread_mutex_t status_mutex;
 	struct dstr status;
 };
@@ -129,6 +133,15 @@ void ios_camera_copy_status(struct ios_camera_source *s, char *buf,
 {
 	pthread_mutex_lock(&s->status_mutex);
 	snprintf(buf, size, "%s", s->status.array ? s->status.array : "");
+	pthread_mutex_unlock(&s->status_mutex);
+}
+
+void ios_camera_copy_state(struct ios_camera_source *s, char *buf,
+			   size_t size)
+{
+	pthread_mutex_lock(&s->status_mutex);
+	snprintf(buf, size, "%s",
+		 s->device_state[0] ? s->device_state : "{}");
 	pthread_mutex_unlock(&s->status_mutex);
 }
 
@@ -456,6 +469,10 @@ static void client_disconnect(struct ios_camera_source *s,
 	/* Clear the last frame so the source goes blank when the phone
 	 * disconnects instead of freezing on a stale image. */
 	obs_source_output_video(s->source, NULL);
+
+	pthread_mutex_lock(&s->status_mutex);
+	s->device_state[0] = 0;
+	pthread_mutex_unlock(&s->status_mutex);
 	set_status(s, "%s (%d)", T_("Status.Listening"), s->port);
 }
 
@@ -550,6 +567,16 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		break;
 	case OBSC_PKT_PING:
 		break;
+	case OBSC_PKT_STATE: {
+		pthread_mutex_lock(&s->status_mutex);
+		size_t n = hdr->payload_size < sizeof(s->device_state) - 1
+				   ? hdr->payload_size
+				   : sizeof(s->device_state) - 1;
+		memcpy(s->device_state, payload, n);
+		s->device_state[n] = 0;
+		pthread_mutex_unlock(&s->status_mutex);
+		break;
+	}
 	case OBSC_PKT_TIMESYNC_RESP:
 		if (hdr->payload_size >= 8) {
 			latency_on_timesync(&c->lat, obsc_read_u64(payload),

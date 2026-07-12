@@ -28,8 +28,8 @@ static const char control_page[] =
 	"padding:10px 16px;margin:0 8px 0 0;font-size:14px}"
 	"button.off{background:#3a3f4a}"
 	"</style></head><body>"
-	"<h2>iOS Camera</h2><div id='status'>connecting…</div>"
-	"<div class='row'><label>Zoom <span id='zv'>1.0×</span></label>"
+	"<h2>iOS Camera</h2><div id='status'>connecting&hellip;</div>"
+	"<div class='row'><label>Zoom <span id='zv'>1.0&times;</span></label>"
 	"<input id='zoom' type='range' min='1' max='10' step='0.1' value='1'></div>"
 	"<div class='row'><label>Exposure <span id='ev'>0.0</span> EV</label>"
 	"<input id='exposure' type='range' min='-2' max='2' step='0.1' value='0'></div>"
@@ -37,26 +37,54 @@ static const char control_page[] =
 	"<button id='af'>Auto</button><button id='mf' class='off'>Locked</button>"
 	"<div style='margin-top:8px'><input id='lens' type='range' min='0' max='1' "
 	"step='0.01' value='0.5' disabled></div></div>"
-	"<div class='row'><button id='torch' class='off'>Torch</button>"
+	"<div class='row'><button id='torch' class='off'>Flashlight</button>"
 	"<button id='flip'>Flip camera</button></div>"
 	"<script>"
-	"const send=o=>fetch('/api/control',{method:'POST',body:JSON.stringify(o)});"
-	"const deb=(f,ms)=>{let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>f(...a),ms)}};"
-	"const dz=deb(()=>send({cmd:'zoom',value:+zoom.value}),60);"
-	"zoom.oninput=()=>{zv.textContent=(+zoom.value).toFixed(1)+'\\u00d7';dz()};"
-	"const de=deb(()=>send({cmd:'exposure_bias',value:+exposure.value}),60);"
-	"exposure.oninput=()=>{ev.textContent=(+exposure.value).toFixed(1);de()};"
-	"af.onclick=()=>{af.className='';mf.className='off';lens.disabled=true;"
-	"send({cmd:'focus',mode:'auto'})};"
-	"mf.onclick=()=>{mf.className='';af.className='off';lens.disabled=false;"
-	"send({cmd:'focus',mode:'locked',lensPosition:+lens.value})};"
-	"lens.oninput=deb(()=>send({cmd:'focus',mode:'locked',lensPosition:+lens.value}),60);"
+	/* NB: elements are looked up explicitly — a bare `status` would
+	 * resolve to window.status, not the div. */
+	"const $=id=>document.getElementById(id);"
+	"const statusEl=$('status'),zoomEl=$('zoom'),zvEl=$('zv'),"
+	"expEl=$('exposure'),evEl=$('ev'),afEl=$('af'),mfEl=$('mf'),"
+	"lensEl=$('lens'),torchEl=$('torch'),flipEl=$('flip');"
+	"statusEl.textContent='connecting\\u2026';"
+	"let lastTouch=0;const touch=()=>lastTouch=Date.now();"
+	"const send=o=>{touch();"
+	"fetch('/api/control',{method:'POST',body:JSON.stringify(o)})};"
+	"const deb=(f,ms)=>{let t;return(...a)=>{clearTimeout(t);"
+	"t=setTimeout(()=>f(...a),ms)}};"
+	"const dz=deb(()=>send({cmd:'zoom',value:+zoomEl.value}),60);"
+	"zoomEl.oninput=()=>{touch();"
+	"zvEl.textContent=(+zoomEl.value).toFixed(1)+'\\u00d7';dz()};"
+	"const de=deb(()=>send({cmd:'exposure_bias',value:+expEl.value}),60);"
+	"expEl.oninput=()=>{touch();evEl.textContent=(+expEl.value).toFixed(1);de()};"
+	"function focusUI(locked){afEl.className=locked?'off':'';"
+	"mfEl.className=locked?'':'off';lensEl.disabled=!locked}"
+	"afEl.onclick=()=>{focusUI(false);send({cmd:'focus',mode:'auto'})};"
+	"mfEl.onclick=()=>{focusUI(true);"
+	"send({cmd:'focus',mode:'locked',lensPosition:+lensEl.value})};"
+	"lensEl.oninput=deb(()=>send({cmd:'focus',mode:'locked',"
+	"lensPosition:+lensEl.value}),60);"
 	"let ton=false;"
-	"torch.onclick=()=>{ton=!ton;torch.className=ton?'':'off';send({cmd:'torch',on:ton})};"
-	"flip.onclick=()=>send({cmd:'flip'});"
-	"setInterval(async()=>{try{const r=await fetch('/api/status');"
-	"const j=await r.json();status.textContent=j.status}"
-	"catch(e){status.textContent='plugin unreachable'}},1000);"
+	"function torchUI(on){ton=on;torchEl.className=on?'':'off'}"
+	"torchEl.onclick=()=>{torchUI(!ton);send({cmd:'torch',on:ton})};"
+	"flipEl.onclick=()=>send({cmd:'flip'});"
+	"async function poll(){try{"
+	"const s=await(await fetch('/api/status')).json();"
+	"statusEl.textContent=s.status||'idle';"
+	"const st=await(await fetch('/api/state')).json();"
+	/* Don't fight the user's hand: only mirror the app's state when
+	 * the panel hasn't been touched for a couple of seconds. */
+	"if(Date.now()-lastTouch>2000&&typeof st.zoom==='number'){"
+	"if(st.maxZoom)zoomEl.max=st.maxZoom;"
+	"zoomEl.value=st.zoom;zvEl.textContent=(+st.zoom).toFixed(1)+'\\u00d7';"
+	"if(typeof st.exposureBias==='number'){expEl.value=st.exposureBias;"
+	"evEl.textContent=(+st.exposureBias).toFixed(1)}"
+	"const locked=st.focusMode==='locked';focusUI(locked);"
+	"if(locked&&typeof st.lensPosition==='number')lensEl.value=st.lensPosition;"
+	"torchUI(!!st.torch);"
+	"torchEl.style.display=st.hasTorch===false?'none':''}"
+	"}catch(e){statusEl.textContent='plugin unreachable'}}"
+	"setInterval(poll,1000);poll();"
 	"</script></body></html>";
 
 struct web_control {
@@ -174,6 +202,13 @@ static void handle_client(struct web_control *wc, socket_t client)
 	if (strncmp(request, "GET / ", 6) == 0) {
 		respond(client, "200 OK", "text/html; charset=utf-8",
 			control_page);
+		return;
+	}
+
+	if (strncmp(request, "GET /api/state ", 15) == 0) {
+		char state[1024] = {0};
+		ios_camera_copy_state(wc->source, state, sizeof(state));
+		respond(client, "200 OK", "application/json", state);
 		return;
 	}
 

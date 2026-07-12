@@ -24,6 +24,8 @@ enum OBSCProtocol {
         case timesyncResp = 6
         /// Camera remote control, plugin → app (JSON payload).
         case control = 7
+        /// Camera state report, app → plugin (JSON snapshot).
+        case state = 8
     }
 
     struct Flags: OptionSet {

@@ -36,6 +36,9 @@ enum obsc_packet_type {
 	/* Camera remote control, plugin → app. UTF-8 JSON payload, e.g.
 	 * {"cmd":"zoom","value":2.0} — see docs/PROTOCOL.md. */
 	OBSC_PKT_CONTROL = 7,
+	/* Camera state report, app → plugin. UTF-8 JSON snapshot of the
+	 * current control values; keeps remote UIs in sync. */
+	OBSC_PKT_STATE = 8,
 };
 
 #define OBSC_FLAG_KEYFRAME 0x0001
