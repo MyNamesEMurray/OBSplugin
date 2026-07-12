@@ -337,7 +337,13 @@ static void latency_tick(struct ios_camera_source *s, struct client_state *c)
 		set_status(s, "%s %s — ~%u ms", T_("Status.Connected"),
 			   c->name[0] ? c->name : "iOS device", avg_ms);
 
-		apply_audio_sync(s, (int64_t)(t->sum_ns / t->count));
+		/* Only steer audio sync from stable measurements: a
+		 * congested link makes latency oscillate wildly, and
+		 * chasing it would yank the mic delay around. */
+		bool stable = (t->max_ns - t->min_ns) < 60000000ULL &&
+			      t->offset_rtt < 50000000ULL;
+		if (stable)
+			apply_audio_sync(s, (int64_t)(t->sum_ns / t->count));
 
 		t->sum_ns = 0;
 		t->count = 0;
