@@ -202,7 +202,29 @@ static bool find_device_id_before(const char *xml, size_t limit, long *out)
 	return true;
 }
 
-int usbmux_list_devices(long *ids, int max)
+/* Copies the string value of the first "<key>KEY</key><string>...".
+ * following `from`. */
+static bool find_string_after(const char *from, const char *key, char *out,
+			      size_t out_size)
+{
+	char pattern[64];
+	snprintf(pattern, sizeof(pattern), "<key>%s</key><string>", key);
+	const char *p = strstr(from, pattern);
+	if (!p)
+		return false;
+	p += strlen(pattern);
+	const char *end = strchr(p, '<');
+	if (!end)
+		return false;
+	size_t n = (size_t)(end - p);
+	if (n >= out_size)
+		n = out_size - 1;
+	memcpy(out, p, n);
+	out[n] = 0;
+	return true;
+}
+
+int usbmux_list_devices(struct usbmux_device *out, int max)
 {
 	socket_t s = usbmuxd_open();
 	if (s == OBSC_INVALID_SOCKET)
@@ -232,12 +254,21 @@ int usbmux_list_devices(long *ids, int max)
 		if (!find_device_id_before(reply, pos, &id) || id < 0)
 			continue;
 
+		char udid[64] = {0};
+		/* SerialNumber lives in the same Properties dict, after
+		 * ConnectionType. */
+		find_string_after(val, "SerialNumber", udid, sizeof(udid));
+
 		bool dup = false;
 		for (int i = 0; i < count; i++)
-			if (ids[i] == id)
+			if (out[i].id == id)
 				dup = true;
-		if (!dup)
-			ids[count++] = id;
+		if (dup)
+			continue;
+
+		out[count].id = id;
+		snprintf(out[count].udid, sizeof(out[count].udid), "%s", udid);
+		count++;
 	}
 
 	bfree(reply);
