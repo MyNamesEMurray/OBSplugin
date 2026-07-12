@@ -9,6 +9,10 @@ enum OBSCProtocol {
     /// LAN or through usbmuxd (USB cable).
     static let usbPort: UInt16 = 9979
 
+    /// Reference-audio format (fixed): 16 kHz mono signed-16-bit PCM.
+    static let audioSampleRate = 16000
+    static let audioChannels = 1
+
     enum PacketType: UInt8 {
         case hello = 1
         case videoConfig = 2
@@ -22,6 +26,9 @@ enum OBSCProtocol {
         case control = 7
         /// Camera state report, app → plugin (JSON snapshot).
         case state = 8
+        /// Reference audio, app → plugin: raw 16 kHz mono S16LE PCM,
+        /// pts = capture time of the first sample (video clock domain).
+        case audio = 9
     }
 
     struct Flags: OptionSet {

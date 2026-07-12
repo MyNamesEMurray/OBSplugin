@@ -31,6 +31,9 @@ targets:
         NSLocalNetworkUsageDescription: >-
           OBSCam connects to OBS Studio on your local network to send the
           camera feed.
+        NSMicrophoneUsageDescription: >-
+          OBSCam can send your microphone to OBS as a timing reference to
+          automatically sync your real microphone to the video.
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"

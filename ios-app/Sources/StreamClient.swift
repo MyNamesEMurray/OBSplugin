@@ -289,6 +289,13 @@ final class StreamClient {
         send(OBSCProtocol.packet(type: .state, payload: payload))
     }
 
+    /// Sends a chunk of reference-audio PCM (lip-sync calibration).
+    func sendAudio(_ pcm: Data, ptsNanoseconds: UInt64) {
+        send(OBSCProtocol.packet(type: .audio,
+                                 ptsNanoseconds: ptsNanoseconds,
+                                 payload: pcm))
+    }
+
     /// Called from the encoder's output thread; hops to the network queue
     /// so the in-flight counter stays consistent. If the network can't keep
     /// up, non-keyframes are dropped rather than queued without bound.

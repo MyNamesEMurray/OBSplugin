@@ -54,6 +54,12 @@ final class Streamer: ObservableObject {
     @Published var dimWhileStreaming: Bool {
         didSet { UserDefaults.standard.set(dimWhileStreaming, forKey: "dimWhileStreaming") }
     }
+    /// Send phone-mic audio as a lip-sync calibration reference (never
+    /// played out — the plugin correlates it against your real mic).
+    @Published var sendAudioReference: Bool {
+        didSet { UserDefaults.standard.set(sendAudioReference, forKey: "sendAudioReference") }
+    }
+    @Published var micPermissionDenied = false
 
     // Live camera controls (also driven remotely via CONTROL packets)
     @Published var zoom: CGFloat = 1 {
@@ -168,6 +174,7 @@ final class Streamer: ObservableObject {
     let camera = CameraManager()
     private var encoder: VideoEncoder?
     private let client = StreamClient()
+    private var audioReference: AudioReference?
 
     init() {
         let defaults = UserDefaults.standard
@@ -183,6 +190,7 @@ final class Streamer: ObservableObject {
         codec = VideoCodec(rawValue: defaults.string(forKey: "videoCodec") ?? "")
             ?? (VideoEncoder.isSupported(.hevc) ? .hevc : .h264)
         dimWhileStreaming = defaults.object(forKey: "dimWhileStreaming") as? Bool ?? true
+        sendAudioReference = defaults.bool(forKey: "sendAudioReference")
 
         client.onStateChange = { [weak self] state in
             Task { @MainActor [weak self] in
@@ -294,6 +302,28 @@ final class Streamer: ObservableObject {
         resetCameraControls()
         startAdaptiveBitrate(target: resolution.bitrate(for: activeCodec))
         client.start(port: OBSCProtocol.usbPort)
+
+        if sendAudioReference {
+            await startAudioReference()
+        }
+    }
+
+    /// Captures phone-mic reference audio for lip-sync calibration.
+    private func startAudioReference() async {
+        guard await AudioReference.requestPermission() else {
+            micPermissionDenied = true
+            return
+        }
+        let reference = AudioReference()
+        reference.onPCM = { [weak self] pcm, pts in
+            self?.client.sendAudio(pcm, ptsNanoseconds: pts)
+        }
+        do {
+            try reference.start()
+            audioReference = reference
+        } catch {
+            print("Audio reference failed: \(error.localizedDescription)")
+        }
     }
 
     /// Adaptive bitrate: back off quickly when the link drops frames,
@@ -349,6 +379,8 @@ final class Streamer: ObservableObject {
         camera.onSampleBuffer = nil
         encoder?.stop()
         encoder = nil
+        audioReference?.stop()
+        audioReference = nil
     }
 
     private func handleClientState(_ state: StreamClient.State) {

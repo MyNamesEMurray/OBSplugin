@@ -33,7 +33,17 @@ enum obsc_packet_type {
 	/* Camera state report, app → plugin. UTF-8 JSON snapshot of the
 	 * current control values; keeps remote UIs in sync. */
 	OBSC_PKT_STATE = 8,
+	/* Reference audio, app → plugin. Payload is raw 16 kHz mono
+	 * signed-16-bit-LE PCM captured from the phone mic, in the same
+	 * clock domain as video (pts = capture time of the first sample).
+	 * Used only as a timing reference to auto-calibrate lip sync; it is
+	 * never played out. See docs/PROTOCOL.md. */
+	OBSC_PKT_AUDIO = 9,
 };
+
+/* Reference-audio format (fixed). */
+#define OBSC_AUDIO_SAMPLE_RATE 16000
+#define OBSC_AUDIO_CHANNELS 1
 
 #define OBSC_FLAG_KEYFRAME 0x0001
 
