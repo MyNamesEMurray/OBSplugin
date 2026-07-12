@@ -18,6 +18,7 @@ struct ContentView: View {
                 receiveSection
                 cameraSection
                 optionsSection
+                lipSyncSection
                 actionSection
             }
             .navigationTitle("OBSCam")
@@ -30,6 +31,14 @@ struct ContentView: View {
             Toggle("Dim screen while streaming", isOn: $streamer.dimWhileStreaming)
         } footer: {
             Text("Saves battery: the screen dims after 10 seconds of streaming; tap to wake it.")
+        }
+    }
+
+    private var lipSyncSection: some View {
+        Section {
+            Toggle("Auto lip-sync reference", isOn: $streamer.sendAudioReference)
+        } footer: {
+            Text("Sends the phone mic to OBS purely as a timing reference so the plugin can auto-align your real microphone to the video. Your phone audio is never streamed or heard.")
         }
     }
 
