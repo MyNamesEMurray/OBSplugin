@@ -103,6 +103,11 @@ final class CameraManager: NSObject {
             if connection.isVideoOrientationSupported {
                 connection.videoOrientation = .landscapeRight
             }
+            // Stabilization buffers multiple frames inside the capture
+            // pipeline — a large hidden latency cost for a live feed.
+            if connection.isVideoStabilizationSupported {
+                connection.preferredVideoStabilizationMode = .off
+            }
             if position == .front, connection.isVideoMirroringSupported {
                 connection.isVideoMirrored = true
             }

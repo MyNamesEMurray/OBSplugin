@@ -58,6 +58,9 @@ final class H264Encoder {
         // at streaming bitrates.
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
                              value: kCFBooleanTrue)
+        // Don't let the encoder sit on frames internally.
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount,
+                             value: NSNumber(value: 1))
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate,
                              value: NSNumber(value: bitrate))
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
