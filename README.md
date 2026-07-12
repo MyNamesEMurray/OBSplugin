@@ -44,6 +44,10 @@ The video appears in the OBS source within a second or two. Disconnecting
   (no inbound firewall rules on the PC), or use the Lightning/USB-C cable
   via Apple's device mux (usbmuxd; on Windows install iTunes). USB needs
   no network at all and charges the phone while streaming.
+- **Multiple devices**: add one "iOS Camera" source per phone. Wi-Fi
+  sources each use their own IP; USB sources auto-distribute across the
+  attached phones (one per source). Two sources aimed at the *same* device
+  are prevented from fighting over it — the second reports it's in use.
 - **H.264 or HEVC**, hardware-encoded (HEVC ~40% smaller at the same
   quality; automatic H.264 fallback on devices without HEVC encode)
 - **Lens selection** — Main, Ultra Wide, Telephoto, Front: dynamically

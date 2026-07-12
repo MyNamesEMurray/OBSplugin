@@ -177,27 +177,80 @@ static bool find_int_after(const char *xml, const char *name, long *out)
 	return true;
 }
 
-socket_t usbmux_connect_first(uint16_t device_port)
+/* Value of the last "<key>DeviceID</key><integer>" occurring before `limit`
+ * (a byte offset into xml). In a device entry the top-level DeviceID
+ * precedes the Properties block, so this pairs a ConnectionType with its
+ * device. */
+static bool find_device_id_before(const char *xml, size_t limit, long *out)
+{
+	const char *pat = "<key>DeviceID</key>";
+	size_t plen = strlen(pat);
+	const char *best = NULL;
+	const char *p = xml;
+	while ((p = strstr(p, pat)) != NULL) {
+		if ((size_t)(p - xml) >= limit)
+			break;
+		best = p;
+		p += plen;
+	}
+	if (!best)
+		return false;
+	const char *i = strstr(best + plen, "<integer>");
+	if (!i)
+		return false;
+	*out = strtol(i + strlen("<integer>"), NULL, 10);
+	return true;
+}
+
+int usbmux_list_devices(long *ids, int max)
+{
+	socket_t s = usbmuxd_open();
+	if (s == OBSC_INVALID_SOCKET)
+		return 0;
+
+	if (!send_plist(s, 1, list_devices_xml)) {
+		net_close(s);
+		return 0;
+	}
+	char *reply = recv_plist(s);
+	net_close(s);
+	if (!reply)
+		return 0;
+
+	int count = 0;
+	const char *pat = "<key>ConnectionType</key><string>";
+	const char *p = reply;
+	while (count < max && (p = strstr(p, pat)) != NULL) {
+		const char *val = p + strlen(pat);
+		bool is_usb = strncmp(val, "USB", 3) == 0;
+		size_t pos = (size_t)(p - reply);
+		p = val;
+		if (!is_usb)
+			continue;
+
+		long id = -1;
+		if (!find_device_id_before(reply, pos, &id) || id < 0)
+			continue;
+
+		bool dup = false;
+		for (int i = 0; i < count; i++)
+			if (ids[i] == id)
+				dup = true;
+		if (!dup)
+			ids[count++] = id;
+	}
+
+	bfree(reply);
+	return count;
+}
+
+socket_t usbmux_connect_device(long device_id, uint16_t device_port)
 {
 	char *reply = NULL;
 
 	socket_t s = usbmuxd_open();
 	if (s == OBSC_INVALID_SOCKET)
 		return s;
-
-	/* Find an attached device. */
-	if (!send_plist(s, 1, list_devices_xml))
-		goto fail;
-	reply = recv_plist(s);
-	if (!reply)
-		goto fail;
-
-	long device_id = -1;
-	find_int_after(reply, "DeviceID", &device_id);
-	bfree(reply);
-	reply = NULL;
-	if (device_id < 0)
-		goto fail; /* no device attached */
 
 	/* Ask the mux to connect us to the app's port on that device.
 	 * PortNumber is expected in network byte order. */
