@@ -20,8 +20,15 @@ Two components:
 
 ## Quick start
 
-1. **Build & install the plugin** — see [`obs-plugin/BUILDING.md`](obs-plugin/BUILDING.md).
-2. **Build & run the iOS app** — see [`ios-app/BUILDING.md`](ios-app/BUILDING.md).
+1. **Install the plugin** — grab the Windows zip or Linux tarball from the
+   [Releases](../../releases) page (Windows: extract into
+   `C:\Program Files\obs-studio\`; Linux: into
+   `~/.config/obs-studio/plugins/`). Or build from source:
+   [`obs-plugin/BUILDING.md`](obs-plugin/BUILDING.md).
+2. **Install the iOS app** — download `OBSCam-unsigned.ipa` from Releases
+   and sideload it with [Sideloadly](https://sideloadly.io) (free Apple ID,
+   re-sign weekly), or build with Xcode:
+   [`ios-app/BUILDING.md`](ios-app/BUILDING.md).
 3. On the phone: open OBSCam, pick camera/resolution/frame rate, and tap
    **Start** — the app shows the phone's IP address.
 4. In OBS: *Sources → + → iOS Camera*, enter that IP as the **Phone IP**
@@ -107,6 +114,16 @@ encoder prioritizes speed with no frame reordering, and the app drops
 rather than queues frames when the link stalls. USB mode
 typically shaves a few more milliseconds over Wi-Fi and is immune to
 Wi-Fi jitter.
+
+## Releases
+
+Pushing a version tag publishes a GitHub Release with ready-to-install
+builds (Windows plugin zip, Linux plugin tarball, unsigned IPA) via
+[`.github/workflows/release.yml`](.github/workflows/release.yml):
+
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
 
 ## Continuous integration
 
