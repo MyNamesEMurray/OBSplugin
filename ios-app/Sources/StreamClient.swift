@@ -285,11 +285,17 @@ final class StreamClient {
         })
     }
 
+    /// What this connection streams — "camera" (the app) or "screen" (the
+    /// broadcast extension). Sent in the HELLO and video config so the
+    /// plugin can label the source and skip camera-only behaviour.
+    var sourceKind: OBSCProtocol.SourceKind = .camera
+
     private func sendHello() {
         let hello: [String: Any] = [
             "name": UIDevice.current.name,
             "app": "LensLink",
             "protocol": Int(OBSCProtocol.version),
+            "kind": sourceKind.rawValue,
         ]
         guard let payload = try? JSONSerialization.data(withJSONObject: hello) else { return }
         send(OBSCProtocol.packet(type: .hello, payload: payload))
@@ -301,9 +307,18 @@ final class StreamClient {
             "width": Int(width),
             "height": Int(height),
             "fps": Int(fps),
+            "kind": sourceKind.rawValue,
         ]
         guard let payload = try? JSONSerialization.data(withJSONObject: config) else { return }
         send(OBSCProtocol.packet(type: .videoConfig, payload: payload))
+    }
+
+    /// Sends a chunk of screen-mirror system audio (48 kHz stereo S16LE
+    /// interleaved), to be played by the plugin as the source's audio.
+    func sendScreenAudio(_ pcm: Data, ptsNanoseconds: UInt64) {
+        send(OBSCProtocol.packet(type: .screenAudio,
+                                 ptsNanoseconds: ptsNanoseconds,
+                                 payload: pcm))
     }
 
     /// Reports the app's current camera-control state so remote UIs

@@ -70,6 +70,10 @@ blanks the source.
   zoom, tap-to-focus, exposure, focus lock, flashlight, camera flip) and
   **from your computer** via a browser panel at
   `http://localhost:9980` (zoom / exposure / focus / flashlight / flip).
+- **Screen mirroring.** Instead of the camera, mirror your whole iPhone/iPad
+  screen into the same OBS source, with the app's audio — great for mobile
+  games or app demos. Tap **Mirror screen to OBS** in the app (works over
+  Wi-Fi or USB). Your microphone isn't sent — mic yourself in OBS as usual.
 - **Automatic lip sync.** The plugin measures the camera's latency and can
   automatically line up a separate microphone with the video — no guessing
   at delay values. (See "Lip sync" below.)

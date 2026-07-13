@@ -292,6 +292,7 @@ struct client_state {
 	struct send_buf out;
 	struct h264_decoder *decoder;
 	bool hw_failed; /* GPU decode failed once: stay on software */
+	bool is_screen; /* screen mirror (plays system audio) vs camera */
 	uint64_t next_decoder_attempt; /* cooldown after create failure */
 	enum AVCodecID codec_id;
 	char name[128];
@@ -789,10 +790,15 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 				   : sizeof(json) - 1;
 		memcpy(json, payload, n);
 		extract_json_string(json, "name", c->name, sizeof(c->name));
-		blog(LOG_INFO, "[lenslink] client connected: %s",
-		     c->name[0] ? c->name : "(unnamed)");
-		set_status(s, "%s %s", T_("Status.Connected"),
-			   c->name[0] ? c->name : "iOS device");
+		char kind[16] = {0};
+		extract_json_string(json, "kind", kind, sizeof(kind));
+		c->is_screen = strcmp(kind, "screen") == 0;
+		blog(LOG_INFO, "[lenslink] client connected: %s (%s)",
+		     c->name[0] ? c->name : "(unnamed)",
+		     c->is_screen ? "screen" : "camera");
+		set_status(s, "%s %s%s", T_("Status.Connected"),
+			   c->name[0] ? c->name : "iOS device",
+			   c->is_screen ? T_("Status.ScreenSuffix") : "");
 		break;
 	}
 	case OBSC_PKT_VIDEO_CONFIG: {
@@ -812,6 +818,10 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 
 		char codec[32] = {0};
 		extract_json_string(json, "codec", codec, sizeof(codec));
+		char kind[16] = {0};
+		extract_json_string(json, "kind", kind, sizeof(kind));
+		if (kind[0])
+			c->is_screen = strcmp(kind, "screen") == 0;
 		enum AVCodecID id = strcmp(codec, "hevc") == 0
 					    ? AV_CODEC_ID_HEVC
 					    : AV_CODEC_ID_H264;
@@ -907,6 +917,23 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 					      OBSC_AUDIO_SAMPLE_RATE,
 					      (uint64_t)plugin_time);
 		pthread_mutex_unlock(&s->lipsync_mutex);
+		break;
+	}
+	case OBSC_PKT_SCREEN_AUDIO: {
+		/* 48 kHz stereo S16LE interleaved, played as the source's
+		 * audio. pts is in the same clock as the video frames, so
+		 * OBS keeps A/V aligned for this async source. */
+		size_t bytes_per_frame =
+			OBSC_SCREEN_AUDIO_CHANNELS * sizeof(int16_t);
+		struct obs_source_audio audio = {0};
+		audio.data[0] = payload;
+		audio.frames = (uint32_t)(hdr->payload_size / bytes_per_frame);
+		audio.speakers = SPEAKERS_STEREO;
+		audio.format = AUDIO_FORMAT_16BIT;
+		audio.samples_per_sec = OBSC_SCREEN_AUDIO_SAMPLE_RATE;
+		audio.timestamp = hdr->pts_ns;
+		if (audio.frames)
+			obs_source_output_audio(s->source, &audio);
 		break;
 	}
 	default:
@@ -1562,7 +1589,10 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 struct obs_source_info ios_camera_source_info = {
 	.id = "ios_camera_source",
 	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_DO_NOT_DUPLICATE,
+	/* AUDIO too: screen mirroring plays the phone's system audio through
+	 * this source (the camera path leaves it silent). */
+	.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO |
+			OBS_SOURCE_DO_NOT_DUPLICATE,
 	.get_name = ios_camera_get_name,
 	.create = ios_camera_create,
 	.destroy = ios_camera_destroy,

@@ -31,21 +31,25 @@ Sent once by the client right after the TCP connection is established.
 Payload: UTF-8 JSON, e.g.
 
 ```json
-{ "name": "Emma's iPhone", "app": "LensLink", "protocol": 1 }
+{ "name": "Emma's iPhone", "app": "LensLink", "protocol": 1, "kind": "camera" }
 ```
+
+`kind` is `"camera"` (the app) or `"screen"` (the screen-mirror broadcast
+extension); it lets the plugin label the source and, for `screen`, expect
+system audio (packet type 10) instead of camera controls. Absent = camera.
 
 ### 2 — VIDEO_CONFIG
 Sent after HELLO and again whenever the capture format changes.
 Payload: UTF-8 JSON, e.g.
 
 ```json
-{ "codec": "h264", "width": 1280, "height": 720, "fps": 30 }
+{ "codec": "h264", "width": 1280, "height": 720, "fps": 30, "kind": "camera" }
 ```
 
 `codec` is `"h264"` or `"hevc"` and selects the plugin's decoder; a codec
 change mid-stream resets the decoder (the next keyframe re-initializes it).
-Dimensions/fps are informational; the authoritative values come from the
-bitstream parameter sets.
+`kind` mirrors the HELLO field. Dimensions/fps are informational; the
+authoritative values come from the bitstream parameter sets.
 
 ### 3 — VIDEO
 Payload: one H.264 or HEVC **access unit in Annex B format** (start-code
@@ -117,6 +121,17 @@ correlation peak is the mic's true latency `L_mic`; the applied sync
 offset is then `L_v − L_mic` (video latency minus mic latency), measured
 directly with no manual entry. Low-confidence windows (silence) hold the
 last value.
+
+### 10 — SCREEN_AUDIO (app → plugin)
+System (app) audio for **screen mirroring**, meant to be **played** as the
+source's audio — unlike type 9, this is not a lip-sync reference. Sent only
+by the broadcast extension (`kind: "screen"`). Payload: raw **48 kHz stereo
+signed-16-bit little-endian interleaved PCM**; `pts` = capture time of the
+first sample, in the same clock domain as the screen video frames, so OBS
+keeps A/V aligned. The plugin outputs it via `obs_source_output_audio`.
+
+Microphone audio is intentionally omitted (a streamer mics themselves in
+OBS; the phone mic would double it).
 
 ## USB transport
 

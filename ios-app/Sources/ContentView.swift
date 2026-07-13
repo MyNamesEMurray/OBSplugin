@@ -27,6 +27,7 @@ struct ContentView: View {
                 optionsSection
                 lipSyncSection
                 actionSection
+                screenMirrorSection
             }
             .navigationTitle("LensLink")
         }
@@ -72,6 +73,25 @@ struct ContentView: View {
             Toggle("Auto lip-sync reference", isOn: $streamer.sendAudioReference)
         } footer: {
             Text("Sends the phone mic to OBS purely as a timing reference so the plugin can auto-align your real microphone to the video. Your phone audio is never streamed or heard.")
+        }
+    }
+
+    /// Screen mirroring is a separate path (a broadcast extension), not the
+    /// camera pipeline — so it lives in its own section with the system
+    /// broadcast picker.
+    private var screenMirrorSection: some View {
+        Section("Mirror your screen instead") {
+            HStack(spacing: Theme.Space.m) {
+                BroadcastButton()
+                    .frame(width: 52, height: 52)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Screen mirror to OBS")
+                        .font(.body.weight(.semibold))
+                    Text("Streams your whole screen + app audio. Point the same OBS source at this phone.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
         }
     }
 

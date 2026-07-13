@@ -13,6 +13,10 @@ enum OBSCProtocol {
     static let audioSampleRate = 16000
     static let audioChannels = 1
 
+    /// Screen-mirror system audio (fixed): 48 kHz stereo S16LE, interleaved.
+    static let screenAudioSampleRate = 48000
+    static let screenAudioChannels = 2
+
     enum PacketType: UInt8 {
         case hello = 1
         case videoConfig = 2
@@ -29,6 +33,16 @@ enum OBSCProtocol {
         /// Reference audio, app → plugin: raw 16 kHz mono S16LE PCM,
         /// pts = capture time of the first sample (video clock domain).
         case audio = 9
+        /// Screen-mirror system audio, app → plugin: 48 kHz stereo S16LE
+        /// interleaved PCM meant to be played (not a lip-sync reference).
+        /// pts = capture time of the first sample (same clock as video).
+        case screenAudio = 10
+    }
+
+    /// What a connection is streaming, sent in the HELLO / video config.
+    enum SourceKind: String {
+        case camera
+        case screen
     }
 
     struct Flags: OptionSet {
