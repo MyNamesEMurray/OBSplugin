@@ -1,4 +1,7 @@
-# LensLink
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.png">
+  <img src="assets/banner-light.png" alt="LensLink" width="560">
+</picture>
 
 Use your iPhone or iPad as a high-quality camera **directly inside OBS
 Studio** — over Wi-Fi or a USB cable. No virtual-camera drivers, no RTMP
