@@ -33,6 +33,7 @@ ios-app/               SwiftUI companion app (XcodeGen project)
   Sources/StreamClient.swift    Network.framework listener + framing
   Sources/AudioReference.swift  mic capture for lip-sync reference
   Sources/StreamingView.swift   full-screen streaming UI + camera controls
+installer/windows/     Inno Setup script for the Windows plugin installer
 docs/PROTOCOL.md       wire protocol specification
 docs/UI_DESIGN.md      app + web-panel design system
 ```

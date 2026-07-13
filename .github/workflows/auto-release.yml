@@ -17,6 +17,7 @@ on:
     paths:
       - "obs-plugin/**"
       - "ios-app/**"
+      - "installer/**"
 
 permissions:
   contents: write

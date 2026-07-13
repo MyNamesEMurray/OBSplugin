@@ -32,7 +32,7 @@ jobs:
           fi
           git fetch --depth=1 origin "$BASE"
           if git diff --name-only "$BASE" HEAD | \
-             grep -qE '^(obs-plugin/|ios-app/|\.github/workflows/build\.yml)'; then
+             grep -qE '^(obs-plugin/|ios-app/|installer/|\.github/workflows/build\.yml)'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
@@ -131,11 +131,22 @@ jobs:
           Copy-Item plugin-build\Release\lenslink.dll stage\obs-plugins\64bit\
           Copy-Item -Recurse obs-plugin\data\* stage\data\obs-plugins\lenslink\
 
+      # Compile the installer on PRs too, so a broken .iss can't reach a
+      # release build. Takes seconds.
+      - name: Build installer
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+          }
+          iscc /DAppVersion=0.0.0 installer\windows\lenslink.iss
+
       - name: Upload plugin artifact
         uses: actions/upload-artifact@v4
         with:
           name: lenslink-windows-x64
-          path: stage/
+          path: |
+            stage/
+            LensLink-installer-windows-x64.exe
 
   ios-app:
     name: iOS app (LensLink)

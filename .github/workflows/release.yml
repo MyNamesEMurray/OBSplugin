@@ -114,10 +114,23 @@ jobs:
           Copy-Item -Recurse obs-plugin\data\* stage\data\obs-plugins\lenslink\
           Compress-Archive -Path stage\* -DestinationPath lenslink-windows-x64.zip
 
+      # One-click alternative to the zip: detects the OBS folder from the
+      # registry and registers an uninstaller. Inno Setup is preinstalled
+      # on the runner image; the guard covers image changes.
+      - name: Build installer
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+          }
+          $version = "${{ inputs.tag_name || github.ref_name }}".TrimStart("v")
+          iscc /DAppVersion=$version installer\windows\lenslink.iss
+
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          path: lenslink-windows-x64.zip
+          path: |
+            lenslink-windows-x64.zip
+            LensLink-installer-windows-x64.exe
 
   ios-app:
     name: iOS app (unsigned IPA)
@@ -168,16 +181,18 @@ jobs:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
           generate_release_notes: true
           files: |
+            dist/LensLink-installer-windows-x64.exe
             dist/lenslink-windows-x64.zip
             dist/lenslink-linux-x86_64.tar.gz
             dist/LensLink-unsigned.ipa
           body: |
             ## Installing
 
-            **Windows (OBS plugin):** download `lenslink-windows-x64.zip`
-            and extract it into `C:\Program Files\obs-studio\` (merge the
-            `obs-plugins` and `data` folders), then restart OBS. Built against
-            OBS Studio 32.x.
+            **Windows (OBS plugin):** download and run
+            `LensLink-installer-windows-x64.exe` — it finds your OBS Studio
+            folder automatically. Then restart OBS. (Prefer doing it by
+            hand? `lenslink-windows-x64.zip` extracts into
+            `C:\Program Files\obs-studio\`.) Built against OBS Studio 32.x.
 
             **Linux (OBS plugin):** download `lenslink-linux-x86_64.tar.gz`
             and extract it into `~/.config/obs-studio/plugins/`.
