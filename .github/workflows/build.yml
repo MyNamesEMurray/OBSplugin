@@ -3,13 +3,44 @@ name: Build
 # CI validation runs on PRs only. A push to main is already validated (the
 # PR built the identical code), and the release workflow rebuilds + ships
 # the artifacts — so building again on the main push would be pure waste.
+#
+# Docs-only PRs skip the builds: a cheap `changes` job diffs the PR and the
+# build jobs are if-gated on it. (A `paths:` filter would be simpler but
+# breaks required checks — the workflow never runs, so the checks sit
+# "expected" forever and the PR can't merge. Skipped jobs count as passing.)
 on:
   pull_request:
   workflow_dispatch:
 
 jobs:
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Diff against base
+        id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          if [ -z "$BASE" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"   # workflow_dispatch: build everything
+            exit 0
+          fi
+          git fetch --depth=1 origin "$BASE"
+          if git diff --name-only "$BASE" HEAD | \
+             grep -qE '^(obs-plugin/|ios-app/|\.github/workflows/build\.yml)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
   obs-plugin-linux:
     name: OBS plugin (Linux)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +69,8 @@ jobs:
 
   obs-plugin-windows:
     name: OBS plugin (Windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-2022
     env:
       # Keep in sync with the OBS release users run: the plugin links the
@@ -48,13 +81,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No submodules here: cache-hit runs only need in-tree headers
+      # (libobs/, deps/w32-pthreads/). The recursive fetch is minutes of
+      # overhead, so it moves into the cache-miss build step below.
       - name: Checkout obs-studio (for libobs)
         uses: actions/checkout@v4
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_REF }}
           path: obs-studio
-          submodules: recursive
 
       - name: Download OBS prebuilt dependencies (FFmpeg)
         run: |
@@ -71,6 +106,7 @@ jobs:
       - name: Build libobs
         if: steps.cache-libobs.outputs.cache-hit != 'true'
         run: |
+          git -C obs-studio submodule update --init --recursive
           cmake -S obs-studio -B obs-build -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
             -DENABLE_UI=OFF -DENABLE_FRONTEND=OFF -DENABLE_PLUGINS=OFF `
@@ -103,6 +139,8 @@ jobs:
 
   ios-app:
     name: iOS app (LensLink)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # Needs Xcode 16+: current XcodeGen emits project format 77, which
     # Xcode 15 (macos-14 runners) cannot open.
     runs-on: macos-15
@@ -116,23 +154,11 @@ jobs:
         run: xcodegen generate
         working-directory: ios-app
 
-      # Builds for the iOS Simulator so no signing certificates are needed.
-      # This validates that all Swift sources compile; producing an
-      # installable device build requires an Apple Developer signing
-      # identity (see README notes on releases).
-      - name: Build (Simulator, unsigned)
-        run: |
-          set -o pipefail
-          xcodebuild build \
-            -project LensLink.xcodeproj \
-            -scheme LensLink \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO
-        working-directory: ios-app
-
-      # Unsigned device build packaged as an .ipa. It cannot be installed
-      # as-is: sideload it with a tool that re-signs with your Apple ID
-      # (Sideloadly / AltStore on Windows or macOS).
+      # Unsigned device build packaged as an .ipa: proves every Swift
+      # source compiles for the real platform, so a separate Simulator
+      # build would just double the (10x-billed) macOS minutes. The .ipa
+      # can't be installed as-is: sideload it with a tool that re-signs
+      # with your Apple ID (Sideloadly / AltStore).
       - name: Build unsigned device IPA
         run: |
           set -o pipefail

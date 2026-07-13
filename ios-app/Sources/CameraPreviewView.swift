@@ -7,7 +7,13 @@ struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     var videoGravity: AVLayerVideoGravity = .resizeAspect
     var onTapAtDevicePoint: ((CGPoint) -> Void)?
-    var onPinchZoom: ((_ scale: CGFloat, _ ended: Bool) -> Void)?
+    var onPinchZoom: ((_ phase: PinchPhase, _ scale: CGFloat) -> Void)?
+
+    enum PinchPhase {
+        case began
+        case changed
+        case ended
+    }
 
     final class PreviewView: UIView {
         override static var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
@@ -30,9 +36,16 @@ struct CameraPreviewView: UIViewRepresentable {
         }
 
         @objc func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
-            let ended = recognizer.state == .ended
-                || recognizer.state == .cancelled
-            parent.onPinchZoom?(recognizer.scale, ended)
+            let phase: PinchPhase
+            switch recognizer.state {
+            case .began:
+                phase = .began
+            case .ended, .cancelled, .failed:
+                phase = .ended
+            default:
+                phase = .changed
+            }
+            parent.onPinchZoom?(phase, recognizer.scale)
         }
     }
 

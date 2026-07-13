@@ -15,6 +15,7 @@ final class AudioReference {
     private var converter: AVAudioConverter?
     private let targetFormat: AVAudioFormat
     private var timebase = mach_timebase_info_data_t()
+    private var observer: NSObjectProtocol?
 
     init() {
         targetFormat = AVAudioFormat(
@@ -23,6 +24,12 @@ final class AudioReference {
             channels: AVAudioChannelCount(OBSCProtocol.audioChannels),
             interleaved: true)!
         mach_timebase_info(&timebase)
+    }
+
+    deinit {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     static func requestPermission() async -> Bool {
@@ -57,9 +64,34 @@ final class AudioReference {
         }
         engine.prepare()
         try engine.start()
+
+        // A route change (Bluetooth headset connecting, wired mic
+        // unplugged) reconfigures the engine and kills the tap; without
+        // this the lip-sync reference silently dies for the session.
+        if observer == nil {
+            observer = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: engine, queue: .main) { [weak self] _ in
+                self?.restart()
+            }
+        }
+    }
+
+    private func restart() {
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        do {
+            try start()
+        } catch {
+            print("Audio reference restart failed: \(error.localizedDescription)")
+        }
     }
 
     func stop() {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+            self.observer = nil
+        }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false)

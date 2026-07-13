@@ -124,7 +124,10 @@ static socket_t usbmuxd_open(void)
 		return OBSC_INVALID_SOCKET;
 	}
 #endif
-	set_timeouts(s, 3);
+	/* Local IPC to a service on this machine: 1 s is generous, and the
+	 * properties dialog enumerates devices on the UI thread — a wedged
+	 * Apple Mobile Device service must not freeze OBS for long. */
+	set_timeouts(s, 1);
 	return s;
 }
 

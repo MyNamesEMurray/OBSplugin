@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #define OBSC_MAGIC 0x4F425343u /* "OBSC" */
 #define OBSC_PROTOCOL_VERSION 1

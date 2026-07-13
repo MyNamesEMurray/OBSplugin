@@ -23,6 +23,12 @@ struct lipsync *lipsync_create(void);
 void lipsync_destroy(struct lipsync *ls);
 void lipsync_reset(struct lipsync *ls);
 
+/* Heap copy of the current state (~74 KB memcpy). Lets the caller hold its
+ * mutex only for the copy and run the expensive lipsync_estimate() on the
+ * clone, unlocked — the OBS audio callback must never wait on the
+ * correlation. Free with lipsync_destroy(). */
+struct lipsync *lipsync_clone(const struct lipsync *ls);
+
 /* Phone reference PCM (mono), sample timestamps derived from start_time_ns
  * — already converted to the plugin's clock domain. */
 void lipsync_add_reference(struct lipsync *ls, const int16_t *pcm,

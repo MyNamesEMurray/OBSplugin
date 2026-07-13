@@ -28,6 +28,11 @@ final class VideoEncoder {
 
     let codec: VideoCodec
 
+    /// Guards `session` and `forceNextKeyframe`: `encode()` runs on the
+    /// capture queue while `stop()`/`setBitrate()`/`requestKeyframe()`
+    /// arrive from the main thread. Holding it across the encode call
+    /// means `stop()` can never invalidate a session mid-frame.
+    private let lock = NSLock()
     private var session: VTCompressionSession?
     private let width: Int32
     private let height: Int32
@@ -45,13 +50,18 @@ final class VideoEncoder {
     }
 
     /// Whether this device can hardware-encode the codec (HEVC needs A10+).
+    /// Cached: the probe creates a real hardware encoder session, far too
+    /// expensive to run per SwiftUI render of the codec picker.
     static func isSupported(_ codec: VideoCodec) -> Bool {
-        if codec == .h264 { return true }
+        codec == .h264 || hevcSupported
+    }
+
+    private static let hevcSupported: Bool = {
         var session: VTCompressionSession?
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width: 1280, height: 720,
-            codecType: codec.vtCodecType,
+            codecType: VideoCodec.hevc.vtCodecType,
             encoderSpecification: nil,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
@@ -61,7 +71,7 @@ final class VideoEncoder {
             VTCompressionSessionInvalidate(session)
         }
         return status == noErr
-    }
+    }()
 
     func start() throws {
         var session: VTCompressionSession?
@@ -106,11 +116,15 @@ final class VideoEncoder {
                              value: NSNumber(value: 2))
 
         VTCompressionSessionPrepareToEncodeFrames(session)
+        lock.lock()
         self.session = session
+        lock.unlock()
     }
 
     /// Adjusts the target bitrate mid-stream (adaptive bitrate).
     func setBitrate(_ bitsPerSecond: Int) {
+        lock.lock()
+        defer { lock.unlock() }
         guard let session else { return }
         Self.applyBitrate(bitsPerSecond, to: session)
     }
@@ -131,6 +145,8 @@ final class VideoEncoder {
     }
 
     func stop() {
+        lock.lock()
+        defer { lock.unlock() }
         guard let session else { return }
         VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
         VTCompressionSessionInvalidate(session)
@@ -141,12 +157,17 @@ final class VideoEncoder {
     /// connection is established mid-stream).
     private var forceNextKeyframe = false
     func requestKeyframe() {
+        lock.lock()
         forceNextKeyframe = true
+        lock.unlock()
     }
 
     func encode(_ sampleBuffer: CMSampleBuffer) {
-        guard let session,
-              let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard let session else { return }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let duration = CMSampleBufferGetDuration(sampleBuffer)
@@ -233,6 +254,9 @@ final class VideoEncoder {
     private func annexBData(from sampleBuffer: CMSampleBuffer,
                             includeParameterSets: Bool) -> Data? {
         var result = Data()
+        // One allocation up front: growing a Data to keyframe size in
+        // repeated appends reallocates several times per frame.
+        result.reserveCapacity(CMSampleBufferGetTotalSampleSize(sampleBuffer) + 256)
 
         if includeParameterSets,
            let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) {

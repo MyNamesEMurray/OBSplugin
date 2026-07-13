@@ -25,12 +25,17 @@ struct StreamingView: View {
                     touched()
                     streamer.camera.focusAndExpose(at: point)
                 },
-                onPinchZoom: { scale, ended in
+                onPinchZoom: { phase, scale in
                     touched()
-                    streamer.zoom = pinchBaseZoom * scale
-                    if ended {
+                    // Re-anchor at gesture start: zoom may have moved via
+                    // the slider or a remote command since the last pinch,
+                    // and a stale base makes the next pinch jump.
+                    if phase == .began {
                         pinchBaseZoom = streamer.zoom
                     }
+                    streamer.zoom = min(
+                        max(pinchBaseZoom * scale, 1),
+                        streamer.camera.maxZoomFactor)
                 }
             )
             .ignoresSafeArea()

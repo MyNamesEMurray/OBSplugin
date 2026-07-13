@@ -151,8 +151,10 @@ static const char control_page[] =
 	"flashlightUI(!!st.flashlight);flashlightEl.style.display=st.hasFlashlight===false?'none':'';"
 	"if(Array.isArray(st.lenses)){"
 	"const want=st.lenses.join('|');"
+	/* textContent, not innerHTML: lens labels come from the device. */
 	"if(lensselEl.dataset.opts!==want){lensselEl.dataset.opts=want;"
-	"lensselEl.innerHTML=st.lenses.map(l=>'<option>'+l+'</option>').join('')}"
+	"lensselEl.replaceChildren(...st.lenses.map(l=>{"
+	"const o=document.createElement('option');o.textContent=l;return o}))}"
 	"if(st.lens)lensselEl.value=st.lens}"
 	"lensselEl.style.display=(st.lenses&&st.lenses.length>1)?'':'none'}"
 	"}catch(e){statusEl.textContent='plugin unreachable';dotEl.style.background=COL.grey}}"
@@ -243,6 +245,34 @@ static void json_escape(const char *in, char *out, size_t out_size)
 	out[o] = 0;
 }
 
+/* True if the header value (up to CR/LF) names a loopback host, e.g.
+ * "localhost:9980" or "127.0.0.1:9980" or "http://localhost:9980". */
+static bool value_is_local(const char *v)
+{
+	while (*v == ' ' || *v == '\t')
+		v++;
+	if (strncmp(v, "http://", 7) == 0)
+		v += 7;
+	return strncmp(v, "localhost", 9) == 0 ||
+	       strncmp(v, "127.0.0.1", 9) == 0;
+}
+
+/* The listener binds to loopback, but that alone doesn't stop DNS
+ * rebinding (Host: attacker.com resolving to 127.0.0.1) or cross-site
+ * POSTs from web pages the streamer happens to visit (a text/plain POST
+ * is a "simple request" — no CORS preflight). Require a loopback Host,
+ * and a loopback Origin whenever the browser sends one. */
+static bool request_is_local(const char *request)
+{
+	const char *host = find_header(request, "Host");
+	if (!host || !value_is_local(host))
+		return false;
+	const char *origin = find_header(request, "Origin");
+	if (origin && !value_is_local(origin))
+		return false;
+	return true;
+}
+
 static void handle_client(struct web_control *wc, socket_t client)
 {
 	char request[MAX_REQUEST + 1];
@@ -270,6 +300,11 @@ static void handle_client(struct web_control *wc, socket_t client)
 	}
 	if (!body)
 		return;
+
+	if (!request_is_local(request)) {
+		respond(client, "403 Forbidden", "text/plain", "forbidden");
+		return;
+	}
 
 	if (strncmp(request, "GET / ", 6) == 0) {
 		respond(client, "200 OK", "text/html; charset=utf-8",
@@ -315,6 +350,14 @@ static void handle_client(struct web_control *wc, socket_t client)
 			have += (size_t)n;
 			request[have] = 0;
 		}
+		/* The refill loop can also exit because the buffer is full
+		 * (headers padded near MAX_REQUEST); enqueuing then would
+		 * read past the received bytes — off the end of `request`. */
+		if (have - body_offset < content_length) {
+			respond(client, "400 Bad Request", "text/plain",
+				"truncated body");
+			return;
+		}
 
 		ios_camera_enqueue_control(wc->source, request + body_offset,
 					   content_length);
@@ -332,11 +375,7 @@ static void *web_thread(void *data)
 	os_set_thread_name("ios-camera-web");
 
 	while (!wc->stop) {
-		fd_set fds;
-		FD_ZERO(&fds);
-		FD_SET(wc->listener, &fds);
-		struct timeval tv = {.tv_sec = 0, .tv_usec = 200 * 1000};
-		int ret = select((int)wc->listener + 1, &fds, NULL, NULL, &tv);
+		int ret = net_wait(wc->listener, NET_WAIT_READ, 200);
 		if (ret < 0)
 			break;
 		if (ret == 0)

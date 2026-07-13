@@ -21,6 +21,13 @@ on:
 permissions:
   contents: write
 
+# Two merges in quick succession must version sequentially: without this,
+# both runs read the same latest tag, compute the same next version, and
+# the loser's release is silently lost when its tag push fails.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
 jobs:
   version:
     name: Tag next version
@@ -38,6 +45,9 @@ jobs:
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.event.after }}
         run: |
+          # Refresh tags at the last moment: a queued run's checkout can
+          # predate the previous run's tag push.
+          git fetch origin --tags --quiet
           latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
           latest=${latest:-v0.1.0}
           version=${latest#v}

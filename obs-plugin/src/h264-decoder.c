@@ -191,6 +191,12 @@ static bool avframe_to_obs(const AVFrame *frame, struct obs_source_frame *out)
 	else if (frame->colorspace == AVCOL_SPC_SMPTE170M ||
 		 frame->colorspace == AVCOL_SPC_BT470BG)
 		cs = VIDEO_CS_601;
+	else if (frame->colorspace == AVCOL_SPC_BT2020_NCL)
+		/* HDR from newer iPhones: pick the right transfer so OBS
+		 * doesn't tone-map 10-bit video as if it were SDR 709. */
+		cs = frame->color_trc == AVCOL_TRC_ARIB_STD_B67
+			     ? VIDEO_CS_2100_HLG
+			     : VIDEO_CS_2100_PQ;
 
 	out->full_range = range == VIDEO_RANGE_FULL;
 	video_format_get_parameters(cs, range, out->color_matrix,
@@ -208,7 +214,8 @@ bool h264_decoder_decode(struct h264_decoder *dec, obs_source_t *source,
 	dec->pkt->dts = (int64_t)pts_ns;
 
 	int ret = avcodec_send_packet(dec->ctx, dec->pkt);
-	if (ret < 0 && ret != AVERROR(EAGAIN)) {
+	bool resend = ret == AVERROR(EAGAIN); /* drain below, then retry */
+	if (ret < 0 && !resend) {
 		blog(LOG_WARNING, "[lenslink] avcodec_send_packet: %d", ret);
 		return ret != AVERROR_INVALIDDATA ? false : true;
 	}
@@ -255,6 +262,17 @@ bool h264_decoder_decode(struct h264_decoder *dec, obs_source_t *source,
 
 		obs_source_output_video(source, &out);
 		av_frame_unref(dec->frame);
+	}
+
+	/* The decoder was full before draining: the packet was never
+	 * consumed, and silently dropping it corrupts the stream until the
+	 * next keyframe. With the queue now drained, one retry succeeds. */
+	if (resend) {
+		ret = avcodec_send_packet(dec->ctx, dec->pkt);
+		if (ret < 0 && ret != AVERROR(EAGAIN))
+			blog(LOG_WARNING,
+			     "[lenslink] avcodec_send_packet (retry): %d",
+			     ret);
 	}
 
 	return true;

@@ -5,7 +5,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # tag_name is required here too: without it a branch dispatch would run
+  # all three builds and then skip publish (the gate below needs a tag).
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing tag to publish the release under"
+        required: true
+        type: string
   workflow_call:
     inputs:
       tag_name:
@@ -56,13 +63,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No submodules here: cache-hit runs only need in-tree headers
+      # (libobs/, deps/w32-pthreads/); the recursive fetch runs only on a
+      # cache miss, inside the build step.
       - name: Checkout obs-studio (for libobs)
         uses: actions/checkout@v4
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_REF }}
           path: obs-studio
-          submodules: recursive
 
       - name: Download OBS prebuilt dependencies (FFmpeg)
         run: |
@@ -79,6 +88,7 @@ jobs:
       - name: Build libobs
         if: steps.cache-libobs.outputs.cache-hit != 'true'
         run: |
+          git -C obs-studio submodule update --init --recursive
           cmake -S obs-studio -B obs-build -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
             -DENABLE_UI=OFF -DENABLE_FRONTEND=OFF -DENABLE_PLUGINS=OFF `

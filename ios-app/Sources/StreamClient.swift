@@ -39,32 +39,44 @@ final class StreamClient {
     private var receiveBuffer = Data()
 
     // MARK: - Lifecycle
+    //
+    // Every mutable property (connection, listener, pingTimer, counters,
+    // buffers, state) is confined to `queue`: the NW handlers already run
+    // there, so the public entry points hop onto it too instead of racing
+    // them from the main thread.
 
     func start(port: UInt16) {
-        // Clean up any previous transport *silently* — a state change
-        // here would look like a fresh drop to the Streamer.
-        teardownConnection()
-        teardownListener()
-        listen(on: port)
+        queue.async { [weak self] in
+            guard let self else { return }
+            // Clean up any previous transport *silently* — a state change
+            // here would look like a fresh drop to the Streamer.
+            self.teardownConnection()
+            self.teardownListener()
+            self.listen(on: port)
+        }
     }
 
     func disconnect() {
-        teardownConnection()
-        teardownListener()
-        state = .disconnected
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.teardownConnection()
+            self.teardownListener()
+            self.state = .disconnected
+        }
     }
 
+    /// Queue-confined.
     private func teardownConnection() {
         pingTimer?.cancel()
         pingTimer = nil
         connection?.cancel()
         connection = nil
-        queue.async { [weak self] in
-            self?.inFlightFrames = 0
-            self?.waitingForKeyframe = false
-        }
+        inFlightFrames = 0
+        waitingForKeyframe = false
+        receiveBuffer.removeAll(keepingCapacity: false)
     }
 
+    /// Queue-confined.
     private func teardownListener() {
         listener?.cancel()
         listener = nil
@@ -77,6 +89,12 @@ final class StreamClient {
         if let tcpOptions = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
             tcpOptions.noDelay = true
             tcpOptions.connectionTimeout = 5
+            // Without keepalive a silently dead link (Wi-Fi drop, no RST)
+            // looks "Live" for minutes while sends pile into the kernel.
+            tcpOptions.enableKeepalive = true
+            tcpOptions.keepaliveIdle = 5
+            tcpOptions.keepaliveInterval = 5
+            tcpOptions.keepaliveCount = 2
         }
         return params
     }
@@ -146,10 +164,9 @@ final class StreamClient {
     }
 
     /// The active connection dropped; the listener stays up so the
-    /// plugin can dial back in.
+    /// plugin can dial back in. Queue-confined.
     private func connectionEnded(failure: String?) {
         teardownConnection()
-        receiveBuffer.removeAll()
         state = listener != nil ? .connecting : .disconnected
     }
 
@@ -173,9 +190,12 @@ final class StreamClient {
     private func processIncoming() {
         while receiveBuffer.count >= OBSCProtocol.headerSize {
             let bytes = [UInt8](receiveBuffer.prefix(OBSCProtocol.headerSize))
+            // Bad magic means the stream is byte-misaligned; discarding
+            // the buffer and carrying on would keep parsing garbage
+            // headers silently. Only a reconnect re-frames the stream.
             guard Array(bytes[0..<4]) == OBSCProtocol.magic,
                   bytes[4] == OBSCProtocol.version else {
-                receiveBuffer.removeAll()
+                connectionEnded(failure: "protocol desync")
                 return
             }
 
@@ -183,7 +203,7 @@ final class StreamClient {
             let pts = bytes[8..<16].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
             let payloadSize = bytes[16..<20].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
             guard payloadSize < 1 << 20 else {
-                receiveBuffer.removeAll()
+                connectionEnded(failure: "oversized packet")
                 return
             }
 
@@ -242,6 +262,14 @@ final class StreamClient {
         let enqueuedAt = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         connection.send(content: data, completion: .contentProcessed { [weak self, weak connection] error in
             guard let self else { return }
+            // Ignore results from connections we've already abandoned, and
+            // our own cancellations — reacting to those poisons the next
+            // connection attempt. This must come *before* the counter
+            // updates: a burst of stale completions right after reconnect
+            // would drain the new connection's in-flight count (weakening
+            // backpressure) and log bogus send delays that make adaptive
+            // bitrate cut the rate on a healthy link.
+            guard let connection, self.connection === connection else { return }
             if isVideoFrame {
                 if self.inFlightFrames > 0 {
                     self.inFlightFrames -= 1
@@ -251,10 +279,6 @@ final class StreamClient {
                     self.maxSendDelayNs = delay
                 }
             }
-            // Ignore results from connections we've already abandoned, and
-            // our own cancellations — reacting to those poisons the next
-            // connection attempt.
-            guard let connection, self.connection === connection else { return }
             if let error, !Self.isCancellation(error) {
                 self.connectionEnded(failure: error.localizedDescription)
             }
@@ -332,14 +356,21 @@ final class StreamClient {
     func sendVideoFrame(_ frame: VideoEncoder.EncodedFrame) {
         queue.async { [weak self] in
             guard let self, self.connection != nil else { return }
+            // The cap applies to keyframes too. Exempting them looks
+            // harmless but is an unbounded-memory bug: every drop requests
+            // a keyframe, so during a long stall the exempt keyframes
+            // would be enqueued into the dead connection without limit.
+            if self.inFlightFrames >= Self.maxInFlightFrames {
+                self.droppedFrames += 1
+                self.waitingForKeyframe = true
+                return
+            }
             if frame.isKeyframe {
                 self.waitingForKeyframe = false
             } else if self.waitingForKeyframe {
-                return
-            }
-            if self.inFlightFrames >= Self.maxInFlightFrames && !frame.isKeyframe {
-                self.droppedFrames += 1
-                self.waitingForKeyframe = true
+                // Broken reference chain: skip this frame, and — now that
+                // there's room to actually send one — ask the encoder for
+                // the keyframe that restarts the stream.
                 self.onFrameDropped?()
                 return
             }

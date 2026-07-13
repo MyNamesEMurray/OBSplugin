@@ -1,4 +1,6 @@
-cmake_minimum_required(VERSION 3.16...3.30)
+# 3.18+: find_path/find_library REQUIRED (used for the FFmpeg lookups)
+# is silently misparsed as a search path on older CMake.
+cmake_minimum_required(VERSION 3.18...3.30)
 
 project(lenslink VERSION 0.1.0 LANGUAGES C)
 

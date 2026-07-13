@@ -3,6 +3,13 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var streamer: Streamer
 
+    // Cached per change, not per render: a Form body re-evaluates on any
+    // published change, and these hit AVCaptureDevice discovery/format
+    // scans (capability checks) or getifaddrs (the IP) each time.
+    @State private var wifiIP: String?
+    @State private var availableResolutions: [CameraManager.Resolution] = []
+    @State private var availableFrameRates: [Int] = []
+
     var body: some View {
         if streamer.isStreaming {
             StreamingView()
@@ -25,6 +32,31 @@ struct ContentView: View {
         }
         .navigationViewStyle(.stack)
         .tint(Theme.accent)
+        .onAppear {
+            wifiIP = NetworkInfo.wifiIPAddress()
+            refreshCapabilities()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.willEnterForegroundNotification)) { _ in
+            wifiIP = NetworkInfo.wifiIPAddress()
+        }
+        .onChange(of: streamer.selectedLens) { _ in refreshCapabilities() }
+        .onChange(of: streamer.resolution) { _ in
+            streamer.clampCaptureSettings()
+            refreshCapabilities()
+        }
+    }
+
+    private func refreshCapabilities() {
+        availableResolutions = CameraManager.Resolution.allCases.filter {
+            CameraManager.supports(resolution: $0, fps: 30,
+                                   lens: streamer.selectedLens)
+        }
+        availableFrameRates = [30, 60].filter {
+            CameraManager.supports(resolution: streamer.resolution,
+                                   fps: Int32($0),
+                                   lens: streamer.selectedLens)
+        }
     }
 
     private var optionsSection: some View {
@@ -57,7 +89,7 @@ struct ContentView: View {
 
     private var receiveSection: some View {
         Section("How to connect") {
-            if let ip = NetworkInfo.wifiIPAddress() {
+            if let ip = wifiIP {
                 HStack {
                     Image(systemName: "wifi")
                     VStack(alignment: .leading, spacing: 2) {
@@ -87,23 +119,6 @@ struct ContentView: View {
         }
     }
 
-    /// Only resolutions this lens actually supports (at any frame rate).
-    private var availableResolutions: [CameraManager.Resolution] {
-        CameraManager.Resolution.allCases.filter {
-            CameraManager.supports(resolution: $0, fps: 30,
-                                   lens: streamer.selectedLens)
-        }
-    }
-
-    /// Only frame rates this lens supports at the chosen resolution.
-    private var availableFrameRates: [Int] {
-        [30, 60].filter {
-            CameraManager.supports(resolution: streamer.resolution,
-                                   fps: Int32($0),
-                                   lens: streamer.selectedLens)
-        }
-    }
-
     private var cameraSection: some View {
         Section("Camera") {
             Picker("Lens", selection: $streamer.selectedLens) {
@@ -116,9 +131,6 @@ struct ContentView: View {
                 ForEach(availableResolutions) { resolution in
                     Text(resolution.rawValue).tag(resolution)
                 }
-            }
-            .onChange(of: streamer.resolution) { _ in
-                streamer.clampCaptureSettings()
             }
 
             Picker("Frame rate", selection: $streamer.fps) {

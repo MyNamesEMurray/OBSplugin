@@ -47,18 +47,68 @@ final class Streamer: ObservableObject {
     @Published var selectedLens: CameraManager.Lens {
         didSet {
             UserDefaults.standard.set(selectedLens.id, forKey: "selectedLens")
+            let oldResolution = resolution
+            let oldFps = fps
             clampCaptureSettings()
             // Live lens switch: reconfigure capture under the running
-            // encoder and connection.
+            // connection. If clamping changed resolution/fps, the encoder
+            // (fixed dimensions) must be rebuilt and OBS re-configured —
+            // feeding differently-sized buffers into the old session
+            // breaks the stream.
             if isStreaming {
-                try? camera.configure(lens: selectedLens,
-                                      resolution: resolution,
-                                      fps: Int32(fps))
-                resetCameraControls()
-                encoder?.requestKeyframe()
-                scheduleStateSend()
+                reconfigureLiveCapture(
+                    formatChanged: resolution != oldResolution
+                        || fps != oldFps)
             }
         }
+    }
+
+    private func reconfigureLiveCapture(formatChanged: Bool) {
+        do {
+            try camera.configure(lens: selectedLens,
+                                 resolution: resolution,
+                                 fps: Int32(fps))
+        } catch {
+            // Never swallow this: a failed reconfigure leaves the session
+            // without input/output — a black stream labelled "Live".
+            status = .error(error.localizedDescription)
+            stopKeepingError()
+            return
+        }
+        resetCameraControls()
+
+        if formatChanged, let oldEncoder = encoder {
+            let activeCodec = oldEncoder.codec
+            oldEncoder.stop()
+            let size = resolution.size
+            let newEncoder = VideoEncoder(
+                codec: activeCodec,
+                width: size.width, height: size.height,
+                fps: Int32(fps),
+                bitrate: resolution.bitrate(for: activeCodec))
+            do {
+                try newEncoder.start()
+            } catch {
+                status = .error(error.localizedDescription)
+                stopKeepingError()
+                return
+            }
+            newEncoder.onEncodedFrame = { [weak self] frame in
+                self?.client.sendVideoFrame(frame)
+            }
+            camera.onSampleBuffer = { [weak newEncoder] sampleBuffer in
+                newEncoder?.encode(sampleBuffer)
+            }
+            encoder = newEncoder
+            client.sendVideoConfig(codec: activeCodec,
+                                   width: size.width, height: size.height,
+                                   fps: Int32(fps))
+            startAdaptiveBitrate(
+                target: resolution.bitrate(for: activeCodec))
+        }
+
+        encoder?.requestKeyframe()
+        scheduleStateSend()
     }
     @Published var codec: VideoCodec {
         didSet { UserDefaults.standard.set(codec.rawValue, forKey: "videoCodec") }
@@ -220,6 +270,21 @@ final class Streamer: ObservableObject {
                 self?.encoder?.requestKeyframe()
             }
         }
+        camera.onInterruption = { [weak self] interrupted in
+            Task { @MainActor [weak self] in
+                guard let self, self.isStreaming else { return }
+                if interrupted {
+                    self.status = .error(
+                        "Camera paused — in use by another app")
+                } else {
+                    // Capture restarted; OBS needs a fresh keyframe to
+                    // pick the stream back up.
+                    self.status = self.lastClientState == .connected
+                        ? .streaming : .connecting
+                    self.encoder?.requestKeyframe()
+                }
+            }
+        }
     }
 
     // MARK: - Remote control (from the OBS plugin / web panel)
@@ -230,18 +295,23 @@ final class Streamer: ObservableObject {
               let command = object as? [String: Any],
               let cmd = command["cmd"] as? String else { return }
 
+        // Clamp remote values before storing: the camera clamps for
+        // itself, but an out-of-range @Published value would put sliders
+        // out of range and misreport state to the web panel.
         switch cmd {
         case "zoom":
             if let value = command["value"] as? Double {
-                zoom = CGFloat(value)
+                zoom = min(max(CGFloat(value), 1), camera.maxZoomFactor)
             }
         case "exposure_bias":
             if let value = command["value"] as? Double {
-                exposureBias = Float(value)
+                let range = camera.exposureBiasRange
+                exposureBias = min(max(Float(value), range.lowerBound),
+                                   range.upperBound)
             }
         case "focus":
             if let position = command["lensPosition"] as? Double {
-                lensPosition = Float(position)
+                lensPosition = min(max(Float(position), 0), 1)
             }
             focusSetting = (command["mode"] as? String) == "locked" ? .locked : .auto
         case "flashlight":
@@ -278,8 +348,15 @@ final class Streamer: ObservableObject {
 
     // MARK: - Streaming lifecycle
 
+    /// Set synchronously before the first await: `guard !isStreaming`
+    /// alone lets a second tap re-enter during the permission prompt and
+    /// leak a live encoder.
+    private var isStarting = false
+
     func start() async {
-        guard !isStreaming else { return }
+        guard !isStreaming, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
 
         guard await CameraManager.requestPermission() else {
             cameraPermissionDenied = true
@@ -403,7 +480,12 @@ final class Streamer: ObservableObject {
         audioReference = nil
     }
 
+    /// Last state reported by the client (client.state itself is confined
+    /// to the network queue).
+    private var lastClientState: StreamClient.State = .disconnected
+
     private func handleClientState(_ state: StreamClient.State) {
+        lastClientState = state
         guard isStreaming else { return }
         switch state {
         case .connected:

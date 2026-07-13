@@ -32,7 +32,21 @@ final class CameraManager: NSObject {
     }
 
     let session = AVCaptureSession()
-    var onSampleBuffer: ((CMSampleBuffer) -> Void)?
+
+    /// Set on the main thread, read per frame on the capture queue —
+    /// hence the lock (a bare closure var is a data race at stop time).
+    var onSampleBuffer: ((CMSampleBuffer) -> Void)? {
+        get { callbackLock.lock(); defer { callbackLock.unlock() }
+              return _onSampleBuffer }
+        set { callbackLock.lock(); defer { callbackLock.unlock() }
+              _onSampleBuffer = newValue }
+    }
+    private var _onSampleBuffer: ((CMSampleBuffer) -> Void)?
+    private let callbackLock = NSLock()
+
+    /// Capture was interrupted (phone call, Camera app, Split View) or
+    /// resumed. Delivered on the main queue.
+    var onInterruption: ((Bool) -> Void)?
 
     /// The device currently feeding the session; camera controls act on it.
     private(set) var activeDevice: AVCaptureDevice?
@@ -40,6 +54,37 @@ final class CameraManager: NSObject {
     private let sessionQueue = DispatchQueue(label: "obscam.session")
     private let videoQueue = DispatchQueue(label: "obscam.video")
     private var videoOutput: AVCaptureVideoDataOutput?
+
+    override init() {
+        super.init()
+        // Without these observers a phone call or the Camera app grabbing
+        // the hardware stops capture permanently while the UI says "Live".
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(sessionInterrupted),
+                           name: .AVCaptureSessionWasInterrupted,
+                           object: session)
+        center.addObserver(self, selector: #selector(sessionResumed),
+                           name: .AVCaptureSessionInterruptionEnded,
+                           object: session)
+        center.addObserver(self, selector: #selector(sessionRuntimeError),
+                           name: .AVCaptureSessionRuntimeError,
+                           object: session)
+    }
+
+    @objc private func sessionInterrupted(_ note: Notification) {
+        DispatchQueue.main.async { self.onInterruption?(true) }
+    }
+
+    @objc private func sessionResumed(_ note: Notification) {
+        start() // the session does not restart itself
+        DispatchQueue.main.async { self.onInterruption?(false) }
+    }
+
+    @objc private func sessionRuntimeError(_ note: Notification) {
+        // Media services reset and similar: restarting the session is the
+        // documented recovery.
+        start()
+    }
 
     static func requestPermission() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -132,9 +177,21 @@ final class CameraManager: NSObject {
         return format(for: device, resolution: resolution, fps: fps) != nil
     }
 
+    /// AVCaptureSession requires serialized access; start/stop run on
+    /// `sessionQueue`, so configuration hops there too (synchronously, to
+    /// keep the throwing API).
     func configure(lens: Lens,
                    resolution: Resolution,
                    fps: Int32) throws {
+        try sessionQueue.sync {
+            try configureOnQueue(lens: lens, resolution: resolution,
+                                 fps: fps)
+        }
+    }
+
+    private func configureOnQueue(lens: Lens,
+                                  resolution: Resolution,
+                                  fps: Int32) throws {
         let position = lens.position
         session.beginConfiguration()
         defer { session.commitConfiguration() }

@@ -47,6 +47,14 @@ void lipsync_reset(struct lipsync *ls)
 	memset(ls, 0, sizeof(*ls));
 }
 
+struct lipsync *lipsync_clone(const struct lipsync *ls)
+{
+	struct lipsync *copy = malloc(sizeof(*copy));
+	if (copy)
+		memcpy(copy, ls, sizeof(*copy));
+	return copy;
+}
+
 static void stream_push(struct env_stream *s, int64_t frame, float energy)
 {
 	s->frame[s->head] = frame;

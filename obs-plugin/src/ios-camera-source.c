@@ -173,8 +173,8 @@ static void recv_buf_free(struct recv_buf *b)
 	memset(b, 0, sizeof(*b));
 }
 
-static void recv_buf_append(struct recv_buf *b, const uint8_t *data,
-			    size_t size)
+/* Makes room for `size` more bytes after the current contents. */
+static void recv_buf_reserve(struct recv_buf *b, size_t size)
 {
 	if (b->len + size > b->cap) {
 		size_t new_cap = b->cap ? b->cap : RECV_CHUNK;
@@ -183,18 +183,29 @@ static void recv_buf_append(struct recv_buf *b, const uint8_t *data,
 		b->data = brealloc(b->data, new_cap);
 		b->cap = new_cap;
 	}
-	memcpy(b->data + b->len, data, size);
-	b->len += size;
 }
 
+/* Discards the first `size` bytes. Called once per recv cycle (not per
+ * packet) so the memmove of the tail isn't O(packets x bytes). A large
+ * keyframe can balloon the buffer to many MB; shrink once it drains so a
+ * spike doesn't pin that memory for the rest of the connection. */
 static void recv_buf_consume(struct recv_buf *b, size_t size)
 {
-	if (size >= b->len) {
+	if (size >= b->len)
 		b->len = 0;
-		return;
+	else {
+		memmove(b->data, b->data + size, b->len - size);
+		b->len -= size;
 	}
-	memmove(b->data, b->data + size, b->len - size);
-	b->len -= size;
+
+	if (b->cap > 2 * RECV_CHUNK && b->len < RECV_CHUNK) {
+		size_t new_cap = 2 * RECV_CHUNK;
+		uint8_t *shrunk = bmalloc(new_cap);
+		memcpy(shrunk, b->data, b->len);
+		bfree(b->data);
+		b->data = shrunk;
+		b->cap = new_cap;
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -262,15 +273,102 @@ static void latency_on_frame(struct latency_tracker *t, uint64_t pts_phone_ns,
 		t->window_start = now_ns;
 }
 
+/* Outbound bytes the non-blocking socket wouldn't take yet. A packet must
+ * never be abandoned part-way: a truncated frame desyncs the app's parser
+ * until reconnect. If the peer stalls long enough to accumulate this much
+ * un-sent control/timesync data, the connection is dead — drop it. */
+#define SEND_BUF_MAX (256 * 1024)
+
+struct send_buf {
+	uint8_t *data;
+	size_t len;
+	size_t cap;
+	bool failed; /* hard send error: connection must be dropped */
+};
+
 struct client_state {
 	socket_t sock;
 	struct recv_buf buf;
+	struct send_buf out;
 	struct h264_decoder *decoder;
 	bool hw_failed; /* GPU decode failed once: stay on software */
+	uint64_t next_decoder_attempt; /* cooldown after create failure */
 	enum AVCodecID codec_id;
 	char name[128];
 	struct latency_tracker lat;
 };
+
+static void send_buf_free(struct send_buf *b)
+{
+	bfree(b->data);
+	memset(b, 0, sizeof(*b));
+}
+
+/* Flushes queued bytes as far as the socket allows. Sets `failed` on a
+ * hard error; EWOULDBLOCK just leaves the remainder queued. */
+static void client_flush(struct client_state *c)
+{
+	struct send_buf *b = &c->out;
+	while (b->len > 0 && !b->failed) {
+		int n = (int)send(c->sock, (const char *)b->data,
+				  (int)b->len, 0);
+		if (n > 0) {
+			memmove(b->data, b->data + n, b->len - (size_t)n);
+			b->len -= (size_t)n;
+		} else if (n < 0 && net_would_block()) {
+			return;
+		} else {
+			b->failed = true;
+		}
+	}
+}
+
+/* Queues (and opportunistically sends) a complete packet. Never sends
+ * part of `data` without queuing the rest, so framing stays intact. */
+static void client_send(struct client_state *c, const void *data, size_t len)
+{
+	struct send_buf *b = &c->out;
+	const uint8_t *p = data;
+
+	if (b->failed)
+		return;
+
+	/* Nothing queued: push as much as the socket takes right now. */
+	if (b->len == 0) {
+		while (len > 0) {
+			int n = (int)send(c->sock, (const char *)p, (int)len,
+					  0);
+			if (n > 0) {
+				p += n;
+				len -= (size_t)n;
+			} else if (n < 0 && net_would_block()) {
+				break;
+			} else {
+				b->failed = true;
+				return;
+			}
+		}
+		if (len == 0)
+			return;
+	}
+
+	if (b->len + len > SEND_BUF_MAX) {
+		blog(LOG_WARNING,
+		     "[lenslink] peer not draining control channel, "
+		     "dropping connection");
+		b->failed = true;
+		return;
+	}
+	if (b->len + len > b->cap) {
+		size_t new_cap = b->cap ? b->cap : 4096;
+		while (new_cap < b->len + len)
+			new_cap *= 2;
+		b->data = brealloc(b->data, new_cap);
+		b->cap = new_cap;
+	}
+	memcpy(b->data + b->len, p, len);
+	b->len += len;
+}
 
 /* ------------------------------------------------------------------ */
 /* Auto lip-sync: tap the chosen mic source and cross-correlate it with the
@@ -394,12 +492,16 @@ static void apply_auto_calibrated(struct ios_camera_source *s,
 	if (!enabled || !name[0])
 		return;
 
+	/* Hold the mutex only for a snapshot: the correlation is ~1.8M
+	 * multiply-adds, and the OBS audio callback blocks on this lock. */
 	int64_t mic_delay = 0;
 	double conf = 0;
 	pthread_mutex_lock(&s->lipsync_mutex);
-	bool ok = s->lipsync &&
-		  lipsync_estimate(s->lipsync, &mic_delay, &conf);
+	struct lipsync *snap = s->lipsync ? lipsync_clone(s->lipsync) : NULL;
 	pthread_mutex_unlock(&s->lipsync_mutex);
+
+	bool ok = snap && lipsync_estimate(snap, &mic_delay, &conf);
+	lipsync_destroy(snap);
 
 	if (!ok) {
 		blog(LOG_INFO,
@@ -565,19 +667,7 @@ static void control_tick(struct ios_camera_source *s, struct client_state *c)
 				  (uint32_t)len);
 		memcpy(packet + OBSC_HEADER_SIZE, pending[i], len);
 
-		size_t sent = 0;
-		int spins = 0;
-		while (sent < total && spins < 100) {
-			int n = (int)send(c->sock,
-					  (const char *)packet + sent,
-					  (int)(total - sent), 0);
-			if (n > 0) {
-				sent += (size_t)n;
-			} else {
-				os_sleep_ms(1);
-				spins++;
-			}
-		}
+		client_send(c, packet, total);
 
 		bfree(packet);
 		bfree(pending[i]);
@@ -594,9 +684,7 @@ static void latency_tick(struct ios_camera_source *s, struct client_state *c)
 		t->last_sync_send = now;
 		uint8_t hdr[OBSC_HEADER_SIZE];
 		obsc_build_header(hdr, OBSC_PKT_TIMESYNC_REQ, 0, now, 0);
-		/* Best effort; a 20-byte send into an open socket either
-		 * fully succeeds or the connection is toast anyway. */
-		send(c->sock, (const char *)hdr, OBSC_HEADER_SIZE, 0);
+		client_send(c, hdr, OBSC_HEADER_SIZE);
 	}
 
 	if (t->count && t->window_start &&
@@ -647,6 +735,7 @@ static void client_disconnect(struct ios_camera_source *s,
 		c->sock = OBSC_INVALID_SOCKET;
 	}
 	recv_buf_free(&c->buf);
+	send_buf_free(&c->out);
 	h264_decoder_destroy(c->decoder);
 	c->decoder = NULL;
 	c->name[0] = 0;
@@ -707,8 +796,13 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		break;
 	}
 	case OBSC_PKT_VIDEO_CONFIG: {
-		blog(LOG_INFO, "[lenslink] video config: %.*s",
-		     (int)hdr->payload_size, (const char *)payload);
+		/* Clamp: payload_size can legally be up to 16 MB, and a
+		 * malformed packet must not dump that into the log. */
+		int log_len = hdr->payload_size < 256
+				      ? (int)hdr->payload_size
+				      : 256;
+		blog(LOG_INFO, "[lenslink] video config: %.*s", log_len,
+		     (const char *)payload);
 
 		char json[512] = {0};
 		size_t n = hdr->payload_size < sizeof(json) - 1
@@ -733,13 +827,27 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			/* Join on a keyframe so the decoder starts clean. */
 			if (!(hdr->flags & OBSC_FLAG_KEYFRAME))
 				break;
+			/* Creation can fail persistently (e.g. no HEVC
+			 * decoder in this FFmpeg build). Dropping the
+			 * connection would just reconnect-churn as fast as
+			 * the LAN allows; keep the link and retry with a
+			 * cooldown instead. */
+			uint64_t now = os_gettime_ns();
+			if (now < c->next_decoder_attempt)
+				break;
 			c->decoder = h264_decoder_create(
 				c->codec_id != AV_CODEC_ID_NONE
 					? c->codec_id
 					: AV_CODEC_ID_H264,
 				s->hw_decode && !c->hw_failed);
-			if (!c->decoder)
-				return false;
+			if (!c->decoder) {
+				c->next_decoder_attempt =
+					now + 5000000000ULL;
+				set_status(s, "%s",
+					   T_("Status.DecoderFailed"));
+				break;
+			}
+			c->next_decoder_attempt = 0;
 		}
 		if (!h264_decoder_decode(c->decoder, s->source, payload,
 					 hdr->payload_size, hdr->pts_ns)) {
@@ -811,8 +919,11 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 
 static bool client_read(struct ios_camera_source *s, struct client_state *c)
 {
-	uint8_t chunk[RECV_CHUNK];
-	int n = (int)recv(c->sock, (char *)chunk, sizeof(chunk), 0);
+	/* Receive straight into the buffer tail (no bounce copy), then
+	 * parse in place with an offset and compact once at the end. */
+	recv_buf_reserve(&c->buf, RECV_CHUNK);
+	int n = (int)recv(c->sock, (char *)c->buf.data + c->buf.len,
+			  RECV_CHUNK, 0);
 	if (n == 0) {
 		blog(LOG_INFO, "[lenslink] connection closed by device");
 		return false;
@@ -821,54 +932,69 @@ static bool client_read(struct ios_camera_source *s, struct client_state *c)
 		blog(LOG_INFO, "[lenslink] recv error %d", net_last_error());
 		return false;
 	}
+	c->buf.len += (size_t)n;
 
-	recv_buf_append(&c->buf, chunk, (size_t)n);
-
-	while (c->buf.len >= OBSC_HEADER_SIZE) {
+	size_t off = 0;
+	bool ok = true;
+	while (c->buf.len - off >= OBSC_HEADER_SIZE) {
 		struct obsc_header hdr;
-		if (!obsc_parse_header(c->buf.data, &hdr)) {
+		if (!obsc_parse_header(c->buf.data + off, &hdr)) {
 			blog(LOG_WARNING,
 			     "[lenslink] bad packet header, dropping client");
-			return false;
+			ok = false;
+			break;
 		}
 
 		size_t total = OBSC_HEADER_SIZE + hdr.payload_size;
-		if (c->buf.len < total)
+		if (c->buf.len - off < total)
 			break;
 
 		if (!handle_packet(s, c, &hdr,
-				   c->buf.data + OBSC_HEADER_SIZE))
-			return false;
+				   c->buf.data + off + OBSC_HEADER_SIZE)) {
+			ok = false;
+			break;
+		}
 
-		recv_buf_consume(&c->buf, total);
+		off += total;
 	}
 
-	return true;
+	recv_buf_consume(&c->buf, off);
+	return ok;
 }
 
-/* TCP connect with a 3-second timeout; returns a non-blocking socket. */
-static socket_t tcp_dial(const char *host, uint16_t port)
+/* TCP connect with a 3-second timeout; returns a non-blocking socket.
+ * Checks `stop` so destroying the source (which joins this thread) isn't
+ * stuck behind the full connect wait. */
+static socket_t tcp_dial(const char *host, uint16_t port,
+			 volatile bool *stop)
 {
-	char port_str[16];
-	snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+	struct sockaddr_in addr = {0};
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
 
-	struct addrinfo hints = {0};
-	struct addrinfo *res = NULL;
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-	if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res)
-		return OBSC_INVALID_SOCKET;
-
-	socket_t s = socket(res->ai_family, res->ai_socktype,
-			    res->ai_protocol);
-	if (s == OBSC_INVALID_SOCKET) {
+	/* The app shows the phone's numeric IP, so this fast path is the
+	 * normal one — and it avoids getaddrinfo, whose DNS timeout can
+	 * block for tens of seconds with no way to interrupt it. */
+	if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+		char port_str[16];
+		snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+		struct addrinfo hints = {0};
+		struct addrinfo *res = NULL;
+		hints.ai_family = AF_INET;
+		hints.ai_socktype = SOCK_STREAM;
+		if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res)
+			return OBSC_INVALID_SOCKET;
+		memcpy(&addr, res->ai_addr, sizeof(addr));
+		addr.sin_port = htons(port);
 		freeaddrinfo(res);
-		return OBSC_INVALID_SOCKET;
 	}
 
+	socket_t s = socket(AF_INET, SOCK_STREAM, 0);
+	if (s == OBSC_INVALID_SOCKET)
+		return OBSC_INVALID_SOCKET;
+
 	net_set_nonblocking(s);
-	int ret = connect(s, res->ai_addr, (int)res->ai_addrlen);
-	freeaddrinfo(res);
+	int ret = connect(s, (struct sockaddr *)&addr, sizeof(addr));
 
 	if (ret != 0) {
 #ifdef _WIN32
@@ -878,11 +1004,19 @@ static socket_t tcp_dial(const char *host, uint16_t port)
 		if (errno != EINPROGRESS)
 			goto fail;
 #endif
-		fd_set wfds;
-		FD_ZERO(&wfds);
-		FD_SET(s, &wfds);
-		struct timeval tv = {.tv_sec = 3, .tv_usec = 0};
-		if (select((int)s + 1, NULL, &wfds, NULL, &tv) != 1)
+		/* Wait in 100 ms slices so a stop request interrupts the
+		 * connect instead of the destroyer waiting out 3 s. */
+		bool writable = false;
+		for (int i = 0; i < 30 && !(stop && *stop); i++) {
+			int r = net_wait(s, NET_WAIT_WRITE, 100);
+			if (r < 0)
+				goto fail;
+			if (r & NET_WAIT_WRITE) {
+				writable = true;
+				break;
+			}
+		}
+		if (!writable)
 			goto fail;
 
 		int err = 0;
@@ -1069,7 +1203,7 @@ static void dial_loop(struct ios_camera_source *s)
 					 k);
 			}
 			set_status(s, "%s %s", T_("Status.Dialing"), s->host);
-			sock = tcp_dial(s->host, OBSC_USB_PORT);
+			sock = tcp_dial(s->host, OBSC_USB_PORT, &s->stop);
 		}
 
 		if (sock == OBSC_INVALID_SOCKET) {
@@ -1084,19 +1218,20 @@ static void dial_loop(struct ios_camera_source *s)
 		struct client_state client = {.sock = sock};
 
 		while (!s->stop) {
-			fd_set fds;
-			FD_ZERO(&fds);
-			FD_SET(sock, &fds);
-			struct timeval tv = {.tv_sec = 0,
-					     .tv_usec = 200 * 1000};
-			int ret = select((int)sock + 1, &fds, NULL, NULL, &tv);
+			int events = NET_WAIT_READ;
+			if (client.out.len > 0)
+				events |= NET_WAIT_WRITE;
+			int ret = net_wait(sock, events, 200);
 			if (ret < 0)
 				break;
+			if (client.out.len > 0)
+				client_flush(&client);
 			latency_tick(s, &client);
 			control_tick(s, &client);
-			if (ret == 0)
-				continue;
-			if (!client_read(s, &client))
+			if (client.out.failed)
+				break;
+			if ((ret & NET_WAIT_READ) &&
+			    !client_read(s, &client))
 				break;
 		}
 
@@ -1278,6 +1413,20 @@ static void ios_camera_destroy(void *data)
 	web_control_stop(s->web);
 	unhook_audio(s);
 	stop_thread(s);
+
+	/* Undo the sync offset we applied to the user's audio source; a
+	 * stale offset would silently persist after this source is gone.
+	 * (The auto video-delay filter lives on this source and dies with
+	 * it.) */
+	if (s->applied_audio_offset != 0 && s->audio_source[0]) {
+		obs_source_t *audio =
+			obs_get_source_by_name(s->audio_source);
+		if (audio) {
+			obs_source_set_sync_offset(audio, 0);
+			obs_source_release(audio);
+		}
+	}
+
 	for (int i = 0; i < s->control_count; i++)
 		bfree(s->control_queue[i]);
 	lipsync_destroy(s->lipsync);
