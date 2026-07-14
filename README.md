@@ -82,6 +82,30 @@ blanks the source.
 - **Battery saver.** While streaming, the phone screen dims after a few
   seconds; tap to wake it.
 
+## Screen mirroring
+
+Tap **Mirror screen to OBS** in the app to send your whole iPhone/iPad
+screen (plus the app's audio) into the same OBS source. It uses iOS's
+built-in screen broadcast, so it works from any app — pick **LensLink
+Screen** in the broadcast picker and tap **Start Broadcast**.
+
+**Locking the source size.** A screen mirror reports whatever resolution
+iOS is broadcasting, and that can differ between apps and orientations, so
+the OBS source may resize when you switch. To pin it to a fixed box on your
+canvas, right-click the source → **Transform** → **Edit Transform…** and set
+**Bounding Box Type** to **Scale to inner bounds** ("Fit"). OBS then scales
+each incoming size to fit your box instead of resizing the layout.
+
+<p align="center">
+  <img src="assets/screen-fit-transform.png"
+       alt="OBS Edit Transform dialog with Bounding Box Type set to Fit"
+       width="420">
+</p>
+
+The browser control panel at `http://localhost:9980` hides the camera
+controls automatically while a screen mirror is connected — none of them
+(zoom, focus, flashlight) apply to a screen.
+
 ## Lip sync
 
 Streamers usually use their own microphone, not the phone's. The plugin can
