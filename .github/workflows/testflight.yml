@@ -64,11 +64,12 @@ jobs:
           # Build number must strictly increase per upload; the run number
           # is monotonic. Offset keeps it clear of any earlier manual builds.
           BUILD_NUMBER=$(( GITHUB_RUN_NUMBER + 1000 ))
-          # CODE_SIGN_IDENTITY="Apple Distribution": without it, automatic
-          # signing archives with a *development* profile — which needs a
-          # registered device, and CI has none ("No profiles for ... were
-          # found"). Distribution profiles have no device list, and the
-          # API key can create the cloud-managed cert on first run.
+          # Automatic signing + -allowProvisioningUpdates is the whole
+          # story: an *archive* selects distribution signing and creates
+          # the App Store profile via the API key with no registered
+          # device. Do NOT override CODE_SIGN_IDENTITY — a manual identity
+          # conflicts with automatic style ("conflicting provisioning
+          # settings"). Export (next step) re-signs for the store.
           xcodebuild archive \
             -project LensLink.xcodeproj \
             -scheme LensLink \
@@ -81,7 +82,6 @@ jobs:
             -allowProvisioningUpdates \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE=Automatic \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
         working-directory: ios-app
 
