@@ -1,0 +1,113 @@
+name: TestFlight
+
+# Builds, signs, and uploads the iOS app (with the screen-mirror extension)
+# to TestFlight. Signing is fully cloud-managed via an App Store Connect
+# API key + `-allowProvisioningUpdates`, so no certificates or provisioning
+# profiles are stored in the repo.
+#
+# One-time setup (see docs/TESTFLIGHT.md): create an App Store Connect API
+# key and add these repository secrets:
+#   APP_STORE_CONNECT_KEY_ID       - the key's Key ID
+#   APP_STORE_CONNECT_ISSUER_ID    - the Issuer ID (Users and Access → Integrations)
+#   APP_STORE_CONNECT_KEY_P8       - the full contents of the .p8 file
+#   APPLE_TEAM_ID                  - your 10-character Developer Team ID
+# and create the app record (bundle id com.exaltedpixels.LensLink) in
+# App Store Connect once.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Build & upload to TestFlight
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard on secrets
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::App Store Connect secrets are not set — see docs/TESTFLIGHT.md."
+            exit 1
+          fi
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios-app
+
+      - name: Write App Store Connect API key
+        env:
+          KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          mkdir -p ~/private_keys
+          echo "$KEY_P8" > ~/private_keys/AuthKey_${KEY_ID}.p8
+
+      - name: Archive (cloud-signed)
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -o pipefail
+          # Build number must strictly increase per upload; the run number
+          # is monotonic. Offset keeps it clear of any earlier manual builds.
+          BUILD_NUMBER=$(( GITHUB_RUN_NUMBER + 1000 ))
+          xcodebuild archive \
+            -project LensLink.xcodeproj \
+            -scheme LensLink \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/LensLink.xcarchive" \
+            -authenticationKeyPath ~/private_keys/AuthKey_${KEY_ID}.p8 \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID" \
+            -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+        working-directory: ios-app
+
+      - name: Export & upload to TestFlight
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -o pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          # 'destination: upload' hands the build straight to App Store
+          # Connect / TestFlight — no separate altool step.
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/LensLink.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -authenticationKeyPath ~/private_keys/AuthKey_${KEY_ID}.p8 \
+            -authenticationKeyID "$KEY_ID" \
+            -authenticationKeyIssuerID "$ISSUER_ID" \
+            -allowProvisioningUpdates
+        working-directory: ios-app
+
+      - name: Clean up API key
+        if: always()
+        run: rm -f ~/private_keys/AuthKey_*.p8
