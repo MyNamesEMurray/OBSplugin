@@ -193,13 +193,17 @@ jobs:
         if: steps.cache-libobs.outputs.cache-hit != 'true'
         run: |
           git -C obs-studio submodule update --init --recursive
+          # libobs-metal is a pure-Swift target added unconditionally on
+          # macOS; without obs-studio's own presets the Swift language is
+          # never enabled and CMake's generate step fails. We only need
+          # libobs, so drop it from the build.
+          sed -i '' 's|add_subdirectory(libobs-metal)||' obs-studio/CMakeLists.txt
           cmake -S obs-studio -B obs-build -G Xcode \
             -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
             -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="-" \
             -DENABLE_UI=OFF -DENABLE_FRONTEND=OFF -DENABLE_PLUGINS=OFF \
-            -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF -DENABLE_WEBSOCKET=OFF \
-            -DENABLE_AJA=OFF
+            -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF
           cmake --build obs-build --target libobs --config Release
 
       - name: Build plugin
