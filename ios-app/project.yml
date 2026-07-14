@@ -28,8 +28,12 @@ targets:
         # builds are testable immediately instead of "Missing Compliance".
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
+        # All four orientations: App Store validation requires the full set
+        # for iPad multitasking (or UIRequiresFullScreen, which we'd rather
+        # not force).
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: >-
@@ -42,6 +46,9 @@ targets:
           automatically sync your real microphone to the video.
     settings:
       base:
+        # Explicit (not derived from bundleIdPrefix): com.exaltedpixels.LensLink
+        # is registered to another Apple account, so it can't be used.
+        PRODUCT_BUNDLE_IDENTIFIER: com.exaltedpixels.LensLinkCamera
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

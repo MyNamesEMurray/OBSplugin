@@ -11,7 +11,7 @@ name: TestFlight
 #   APP_STORE_CONNECT_ISSUER_ID    - the Issuer ID (Users and Access → Integrations)
 #   APP_STORE_CONNECT_KEY_P8       - the full contents of the .p8 file
 #   APPLE_TEAM_ID                  - your 10-character Developer Team ID
-# and create the app record (bundle id com.exaltedpixels.LensLink) in
+# and create the app record (bundle id com.exaltedpixels.LensLinkCamera) in
 # App Store Connect once.
 
 on:
@@ -38,6 +38,20 @@ jobs:
             echo "::error::App Store Connect secrets are not set — see docs/TESTFLIGHT.md."
             exit 1
           fi
+
+      # App Store Connect rejects uploads built with older SDKs ("must be
+      # built with the iOS 26 SDK or later"); the runner's default Xcode
+      # is older, so pick the newest Xcode 26.x on the image.
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::No Xcode 26.x on this runner image. Installed:"
+            ls /Applications | grep -i xcode || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen

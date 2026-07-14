@@ -29,7 +29,7 @@ repository secret**, four times:
 ## 3. Create the app record (once)
 
 1. App Store Connect → **Apps** → **+** → **New App**.
-2. Platform iOS, name **LensLink**, bundle ID **com.exaltedpixels.LensLink**
+2. Platform iOS, name **LensLink**, bundle ID **com.exaltedpixels.LensLinkCamera**
    (register it under Identifiers if it isn't offered; the CI's
    `-allowProvisioningUpdates` registers the broadcast extension's child id
    `…LensLink.broadcast` automatically on first run).
