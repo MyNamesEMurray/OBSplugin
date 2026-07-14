@@ -111,10 +111,10 @@ each incoming size to fit your box instead of resizing the layout.
 </p>
 
 The LensLink Screen source has no camera controls (and no browser panel) —
-its properties are just the connection, decoding, and diagnostics. If a
-screen broadcast connects to a LensLink *Camera* source instead, it still
-plays, and the camera source's browser panel hides its controls
-automatically.
+its properties are just the connection, decoding, and diagnostics. Each
+source type accepts only its own stream: a LensLink Screen source rejects a
+camera stream (and vice versa), with the Status field in the source's
+properties explaining what to switch.
 
 ## Lip sync
 

@@ -334,6 +334,7 @@ struct client_state {
 	uint64_t last_diag_ns;   /* last heartbeat emission */
 	uint64_t first_frame_ns; /* 0 until the first decoded frame */
 	bool no_output_warned;   /* one-shot "keyframe but nothing decoded" */
+	bool wrong_kind; /* stream kind doesn't match this source type */
 };
 
 static void send_buf_free(struct send_buf *b)
@@ -848,7 +849,15 @@ static void client_disconnect(struct ios_camera_source *s,
 	s->device_state[0] = 0;
 	s->is_screen = false;
 	pthread_mutex_unlock(&s->status_mutex);
-	set_status(s, "%s", T_("Status.Disconnected"));
+
+	/* A kind-mismatch rejection needs its actionable status to survive
+	 * the disconnect — "Disconnected" would hide what to fix. */
+	if (c->wrong_kind)
+		set_status(s, "%s",
+			   s->is_screen_source ? T_("Status.CameraOnScreen")
+					       : T_("Status.ScreenOnCamera"));
+	else
+		set_status(s, "%s", T_("Status.Disconnected"));
 }
 
 static void extract_json_string(const char *json, const char *key, char *out,
@@ -900,18 +909,21 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		blog(LOG_INFO, "[lenslink] client connected: %s (%s)",
 		     c->name[0] ? c->name : "(unnamed)",
 		     c->is_screen ? "screen" : "camera");
-		/* The phone picks what it streams, not this source. On a
-		 * mismatch, still show the stream (never a black source) but
-		 * point at the matching source type in the status. */
-		if (s->is_screen_source && !c->is_screen)
-			set_status(s, "%s", T_("Status.CameraOnScreen"));
-		else if (!s->is_screen_source && c->is_screen)
-			set_status(s, "%s %s%s", T_("Status.Connected"),
-				   c->name[0] ? c->name : "iOS device",
-				   T_("Status.ScreenSuffix"));
-		else
-			set_status(s, "%s %s", T_("Status.Connected"),
-				   c->name[0] ? c->name : "iOS device");
+		/* The phone picks what it streams, not this source; each source
+		 * type accepts only its own kind. Rejecting here (rather than
+		 * displaying with a warning) keeps a Screen source from ever
+		 * showing a camera and vice versa — the status says what to do
+		 * instead, and the dial loop backs off before retrying. */
+		if (c->is_screen != s->is_screen_source) {
+			c->wrong_kind = true;
+			blog(LOG_INFO,
+			     "[lenslink] rejecting %s stream on a %s source",
+			     c->is_screen ? "screen" : "camera",
+			     s->is_screen_source ? "screen" : "camera");
+			return false;
+		}
+		set_status(s, "%s %s", T_("Status.Connected"),
+			   c->name[0] ? c->name : "iOS device");
 		break;
 	}
 	case OBSC_PKT_VIDEO_CONFIG: {
@@ -1105,6 +1117,12 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		break;
 	}
 	case OBSC_PKT_SCREEN_AUDIO: {
+		/* Only the screen source type plays audio (the camera type
+		 * doesn't even advertise OBS_SOURCE_AUDIO). Screen streams are
+		 * rejected on camera sources at HELLO, but don't rely on the
+		 * sender handshaking first. */
+		if (!s->is_screen_source)
+			break;
 		/* 48 kHz stereo S16LE interleaved, played as the source's
 		 * audio. pts is in the same clock as the video frames, so
 		 * OBS keeps A/V aligned for this async source. */
@@ -1479,7 +1497,15 @@ static void dial_loop(struct ios_camera_source *s)
 		}
 
 		blog(LOG_INFO, "[lenslink] device connection ended");
+		bool wrong_kind = client.wrong_kind;
 		client_disconnect(s, &client);
+
+		/* Rejected for the wrong stream kind: the phone will keep
+		 * offering the same stream, so an immediate redial would spin
+		 * a reject loop at LAN speed. Back off; the status already
+		 * says what to change. */
+		if (wrong_kind)
+			sleep_ms_interruptible(s, 3000);
 	}
 
 	if (claimed)
@@ -1854,10 +1880,12 @@ static obs_properties_t *lenslink_screen_get_properties(void *data)
 struct obs_source_info ios_camera_source_info = {
 	.id = "ios_camera_source",
 	.type = OBS_SOURCE_TYPE_INPUT,
-	/* AUDIO too: a screen stream plays the phone's system audio through
-	 * this source (the camera path leaves it silent). */
-	.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO |
-			OBS_SOURCE_DO_NOT_DUPLICATE,
+	/* No AUDIO flag: the camera path never plays audio (the phone mic is
+	 * only a lip-sync reference), and screen streams — the one thing that
+	 * did play audio here pre-split — are now rejected on this type. This
+	 * keeps camera sources out of the mixer instead of showing a dead
+	 * meter. */
+	.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_DO_NOT_DUPLICATE,
 	.get_name = ios_camera_get_name,
 	.create = ios_camera_create,
 	.destroy = ios_camera_destroy,
