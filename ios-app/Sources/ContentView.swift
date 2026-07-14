@@ -10,6 +10,12 @@ struct ContentView: View {
     @State private var availableResolutions: [CameraManager.Resolution] = []
     @State private var availableFrameRates: [Int] = []
 
+    // Collapsible help: the connection instructions are essential exactly
+    // once. Persisted so the form stays minimal after the user has
+    // collapsed them, keeping Start/Mirror near the top of the screen.
+    @AppStorage("showConnectionHelp") private var showConnectionHelp = true
+    @AppStorage("showMirrorTools") private var showMirrorTools = false
+
     var body: some View {
         if streamer.isStreaming {
             StreamingView()
@@ -21,13 +27,10 @@ struct ContentView: View {
     private var settingsForm: some View {
         NavigationView {
             Form {
-                statusSection
-                receiveSection
+                connectSection
+                streamSection
                 cameraSection
                 optionsSection
-                lipSyncSection
-                actionSection
-                screenMirrorSection
             }
             .navigationTitle("LensLink")
         }
@@ -60,75 +63,9 @@ struct ContentView: View {
         }
     }
 
-    private var optionsSection: some View {
-        Section {
-            Toggle("Dim screen while streaming", isOn: $streamer.dimWhileStreaming)
-        } footer: {
-            Text("Saves battery: the screen dims after 10 seconds of streaming; tap to wake it.")
-        }
-    }
-
-    private var lipSyncSection: some View {
-        Section {
-            Toggle("Auto lip-sync reference", isOn: $streamer.sendAudioReference)
-        } footer: {
-            Text("Sends the phone mic to OBS purely as a timing reference so the plugin can auto-align your real microphone to the video. Your phone audio is never streamed or heard.")
-        }
-    }
-
-    @State private var probeResult: String?
-    @State private var extensionStatus = ""
-
-    /// Screen mirroring is a separate path (a broadcast extension), not the
-    /// camera pipeline — so it lives in its own section with the system
-    /// broadcast picker.
-    private var screenMirrorSection: some View {
-        Section("Mirror your screen instead") {
-            HStack(spacing: Theme.Space.m) {
-                BroadcastButton()
-                    .frame(width: 52, height: 52)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Screen mirror to OBS")
-                        .font(.body.weight(.semibold))
-                    Text("Streams your whole screen + app audio. Point the same OBS source at this phone.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            // Whether the extension survived sideloading — the broadcast
-            // picker can show a stale entry even when it didn't.
-            Text(extensionStatus)
-                .font(.caption)
-                .foregroundColor(
-                    extensionStatus.hasPrefix("✓") ? .secondary : .red)
-                .onAppear {
-                    extensionStatus =
-                        BroadcastProbe.installedExtensionDescription()
-                }
-            // Diagnostic: verifies the broadcast extension's listener is
-            // reachable on-device, independent of OBS/USB. Run it while a
-            // broadcast is active.
-            Button {
-                probeResult = "Checking…"
-                BroadcastProbe.run { ok in
-                    probeResult = ok
-                        ? "✓ Broadcast link is up — OBS should be able to connect"
-                        : "✗ No listener — is a screen broadcast running? If yes, the extension isn't working"
-                }
-            } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Check broadcast link")
-                    if let probeResult {
-                        Text(probeResult)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-        }
-    }
-
-    private var statusSection: some View {
+    /// Status + the phone's address on one compact line; the longer
+    /// instructions collapse away once read.
+    private var connectSection: some View {
         Section {
             HStack(spacing: Theme.Space.m) {
                 Circle()
@@ -136,39 +73,120 @@ struct ContentView: View {
                     .frame(width: 10, height: 10)
                 Text(streamer.status.displayName)
                     .font(.callout)
+                Spacer()
+                if let ip = wifiIP {
+                    Text(ip)
+                        .font(.callout.monospacedDigit().bold())
+                        .textSelection(.enabled)
+                }
+            }
+            DisclosureGroup("How to connect", isExpanded: $showConnectionHelp) {
+                if let ip = wifiIP {
+                    Label {
+                        Text("In OBS, add a \"LensLink Camera\" source and enter \(Text(ip).bold()) as the Phone IP. (Phone and computer must be on the same Wi-Fi.)")
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                    } icon: {
+                        Image(systemName: "wifi")
+                    }
+                } else {
+                    Label {
+                        Text("No Wi-Fi address found — connect to Wi-Fi, or use a USB cable.")
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                    } icon: {
+                        Image(systemName: "wifi.slash")
+                    }
+                }
+                Label {
+                    Text("Or plug in a USB cable and set the OBS source's Connection to \"USB cable\" (needs iTunes on Windows). No Wi-Fi required.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                } icon: {
+                    Image(systemName: "cable.connector")
+                }
             }
         }
     }
 
-    private var receiveSection: some View {
-        Section("How to connect") {
-            if let ip = wifiIP {
-                HStack {
-                    Image(systemName: "wifi")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("This phone's address")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(ip)
-                            .font(.title3.monospacedDigit().bold())
-                            .textSelection(.enabled)
+    @State private var probeResult: String?
+    @State private var extensionStatus = ""
+
+    /// Both ways to stream, side by side near the top: the camera (the
+    /// primary action) and the screen mirror (a broadcast extension, so it
+    /// uses the system picker). Mirror diagnostics hide in a disclosure.
+    private var streamSection: some View {
+        Section {
+            Button {
+                Task { await streamer.start() }
+            } label: {
+                Label("Start streaming to OBS", systemImage: "video.fill")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+
+            if streamer.cameraPermissionDenied || streamer.micPermissionDenied {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
                     }
                 }
-                Text("In OBS, add a \"LensLink Camera\" source and enter this address as the Phone IP.")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-            } else {
-                Text("No Wi-Fi address found — connect to Wi-Fi, or use a USB cable.")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
             }
-            Label {
-                Text("Or plug in a USB cable and set the OBS source's Connection to \"USB cable\" (needs iTunes on Windows). No Wi-Fi required.")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-            } icon: {
-                Image(systemName: "cable.connector")
+
+            HStack(spacing: Theme.Space.m) {
+                BroadcastButton()
+                    .frame(width: 44, height: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Mirror your screen instead")
+                        .font(.body.weight(.semibold))
+                    Text("Whole screen + app audio, to a \"LensLink Screen\" source.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
+
+            // Surface a broken extension unconditionally (sideloading can
+            // silently drop it); the healthy checkmark stays collapsed.
+            if !extensionStatus.isEmpty && !extensionStatus.hasPrefix("✓") {
+                Text(extensionStatus)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+
+            DisclosureGroup("Screen mirror tools", isExpanded: $showMirrorTools) {
+                Text(extensionStatus)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                // Diagnostic: verifies the broadcast extension's listener
+                // is reachable on-device, independent of OBS/USB. Run it
+                // while a broadcast is active.
+                Button {
+                    probeResult = "Checking…"
+                    BroadcastProbe.run { ok in
+                        probeResult = ok
+                            ? "✓ Broadcast link is up — OBS should be able to connect"
+                            : "✗ No listener — is a screen broadcast running? If yes, the extension isn't working"
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Check broadcast link")
+                        if let probeResult {
+                            Text(probeResult)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            // Whether the extension survived sideloading — the broadcast
+            // picker can show a stale entry even when it didn't.
+            extensionStatus = BroadcastProbe.installedExtensionDescription()
         }
     }
 
@@ -201,27 +219,16 @@ struct ContentView: View {
         }
     }
 
-    private var actionSection: some View {
+    private var optionsSection: some View {
+        // Section has no (title-string + footer-closure) initializer; the
+        // header must be a closure too.
         Section {
-            Button {
-                Task { await streamer.start() }
-            } label: {
-                Label("Start streaming to OBS", systemImage: "video.fill")
-                    .font(.body.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
-
-            if streamer.cameraPermissionDenied || streamer.micPermissionDenied {
-                Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                }
-            }
+            Toggle("Dim screen while streaming", isOn: $streamer.dimWhileStreaming)
+            Toggle("Auto lip-sync reference", isOn: $streamer.sendAudioReference)
+        } header: {
+            Text("Options")
+        } footer: {
+            Text("Dim: the screen dims after 10 seconds of streaming; tap to wake. Lip-sync: sends the phone mic to OBS purely as a timing reference so the plugin can auto-align your real microphone — it is never streamed or heard.")
         }
     }
 }

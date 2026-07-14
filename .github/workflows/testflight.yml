@@ -16,8 +16,13 @@ name: TestFlight
 
 on:
   workflow_dispatch:
+  # Only fires for releases published by a real user. Auto-releases are
+  # published with GITHUB_TOKEN, whose events GitHub suppresses from
+  # triggering workflows — auto-release.yml therefore *calls* this
+  # workflow directly instead (workflow_call below).
   release:
     types: [published]
+  workflow_call:
 
 concurrency:
   group: testflight

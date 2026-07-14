@@ -20,6 +20,7 @@ struct StreamingView: View {
 
             CameraPreviewView(
                 session: streamer.camera.session,
+                sessionQueue: streamer.camera.sessionQueue,
                 videoGravity: .resizeAspect,
                 onTapAtDevicePoint: { point in
                     touched()

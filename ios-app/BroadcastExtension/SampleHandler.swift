@@ -128,9 +128,10 @@ class SampleHandler: RPBroadcastSampleHandler {
             try? await Task.sleep(nanoseconds: 30_000_000_000)
             guard let self, !Task.isCancelled, !self.everConnected else { return }
             self.fail("OBS did not connect within 30 seconds "
-                + "[\(self.client.debugStatus())]. Check the LensLink "
-                + "Camera source points at this phone (USB, or this "
-                + "phone's Wi-Fi IP) and the camera stream isn't running.")
+                + "[\(self.client.debugStatus())]. Check OBS has a LensLink "
+                + "Screen source pointing at this phone (USB, or this "
+                + "phone's Wi-Fi IP) — a LensLink Camera source won't accept "
+                + "a screen broadcast — and the camera stream isn't running.")
         }
     }
 

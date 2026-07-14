@@ -93,3 +93,14 @@ jobs:
       tag_name: ${{ needs.version.outputs.tag }}
     permissions:
       contents: write
+
+  # Called directly rather than relying on the `release: published`
+  # trigger: releases created with GITHUB_TOKEN never trigger other
+  # workflows (GitHub's recursion guard), so the TestFlight upload would
+  # silently not happen for auto-releases.
+  testflight:
+    name: TestFlight
+    needs: [version, release]
+    if: needs.version.outputs.tag != ''
+    uses: ./.github/workflows/testflight.yml
+    secrets: inherit

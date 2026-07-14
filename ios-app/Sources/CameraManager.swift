@@ -51,7 +51,10 @@ final class CameraManager: NSObject {
     /// The device currently feeding the session; camera controls act on it.
     private(set) var activeDevice: AVCaptureDevice?
 
-    private let sessionQueue = DispatchQueue(label: "obscam.session")
+    /* Internal (not private): the preview layer attaches/detaches its
+     * session on this queue too — doing that on the main thread contends
+     * with start/stopRunning and freezes the UI for seconds. */
+    let sessionQueue = DispatchQueue(label: "obscam.session")
     private let videoQueue = DispatchQueue(label: "obscam.video")
     private var videoOutput: AVCaptureVideoDataOutput?
 
