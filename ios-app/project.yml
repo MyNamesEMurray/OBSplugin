@@ -26,6 +26,10 @@ targets:
         CFBundleDisplayName: LensLink
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Plain TCP on the local network, no custom crypto: pre-answers
+        # App Store Connect's export-compliance question so TestFlight
+        # builds are testable immediately instead of "Missing Compliance".
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
