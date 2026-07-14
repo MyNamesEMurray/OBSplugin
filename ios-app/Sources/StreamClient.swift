@@ -99,9 +99,51 @@ final class StreamClient {
         return params
     }
 
+    // Diagnostics (queue-confined): what the listener actually did — the
+    // broadcast extension has no UI or reachable logs on Windows setups,
+    // so failure alerts embed this snapshot.
+    private var listenerStateDescription = "not started"
+    private var acceptedConnections = 0
+
+    // Cumulative send-side counters for the screen-mirror diagnostics
+    // heartbeat (distinct from the adaptive-bitrate counters below, which
+    // reset every sample). Queue-confined.
+    private var diagVideoSent = 0
+    private var diagVideoDropped = 0
+    private var diagKeyframesSent = 0
+    private var diagVideoBytes = 0
+    private var diagAudioChunks = 0
+
+    /// One-line health snapshot, safe to call from any thread.
+    func debugStatus() -> String {
+        queue.sync {
+            "listener=\(listenerStateDescription), "
+                + "accepted=\(acceptedConnections), state=\(state)"
+        }
+    }
+
+    /// One-line send-path snapshot for the diagnostics heartbeat. The
+    /// broadcast extension forwards this to the plugin, which logs it, so
+    /// the phone's view of the stream shows up in the OBS log too.
+    func diagnosticsSnapshot() -> String {
+        queue.sync {
+            "net sent=\(diagVideoSent) kf=\(diagKeyframesSent) "
+                + "drop=\(diagVideoDropped) \(diagVideoBytes / 1024)KiB "
+                + "aud=\(diagAudioChunks) inflight=\(inFlightFrames) "
+                + "acc=\(acceptedConnections) \(state)"
+        }
+    }
+
+    /// Sends a short diagnostics line to the plugin (logged to the OBS log).
+    func sendDiag(_ text: String) {
+        guard let payload = text.data(using: .utf8) else { return }
+        send(OBSCProtocol.packet(type: .diag, payload: payload))
+    }
+
     private func listen(on port: UInt16) {
         guard let nwPort = NWEndpoint.Port(rawValue: port),
               let listener = try? NWListener(using: Self.tcpParameters(), on: nwPort) else {
+            listenerStateDescription = "init failed"
             state = .failed("Could not open USB listener")
             return
         }
@@ -110,7 +152,12 @@ final class StreamClient {
         state = .connecting
 
         listener.newConnectionHandler = { [weak self, weak listener] newConnection in
-            guard let self, let listener, self.listener === listener else {
+            guard let self else {
+                newConnection.cancel()
+                return
+            }
+            self.acceptedConnections += 1
+            guard let listener, self.listener === listener else {
                 newConnection.cancel()
                 return
             }
@@ -120,6 +167,7 @@ final class StreamClient {
         }
         listener.stateUpdateHandler = { [weak self, weak listener] newState in
             guard let self, let listener, self.listener === listener else { return }
+            self.listenerStateDescription = "\(newState)"
             if case .failed(let error) = newState {
                 self.state = .failed(error.localizedDescription)
                 self.teardownListener()
@@ -285,11 +333,17 @@ final class StreamClient {
         })
     }
 
+    /// What this connection streams — "camera" (the app) or "screen" (the
+    /// broadcast extension). Sent in the HELLO and video config so the
+    /// plugin can label the source and skip camera-only behaviour.
+    var sourceKind: OBSCProtocol.SourceKind = .camera
+
     private func sendHello() {
         let hello: [String: Any] = [
             "name": UIDevice.current.name,
             "app": "LensLink",
             "protocol": Int(OBSCProtocol.version),
+            "kind": sourceKind.rawValue,
         ]
         guard let payload = try? JSONSerialization.data(withJSONObject: hello) else { return }
         send(OBSCProtocol.packet(type: .hello, payload: payload))
@@ -301,9 +355,21 @@ final class StreamClient {
             "width": Int(width),
             "height": Int(height),
             "fps": Int(fps),
+            "kind": sourceKind.rawValue,
         ]
         guard let payload = try? JSONSerialization.data(withJSONObject: config) else { return }
         send(OBSCProtocol.packet(type: .videoConfig, payload: payload))
+    }
+
+    /// Sends a chunk of screen-mirror system audio (48 kHz stereo S16LE
+    /// interleaved), to be played by the plugin as the source's audio.
+    func sendScreenAudio(_ pcm: Data, ptsNanoseconds: UInt64) {
+        queue.async { [weak self] in
+            self?.diagAudioChunks += 1
+        }
+        send(OBSCProtocol.packet(type: .screenAudio,
+                                 ptsNanoseconds: ptsNanoseconds,
+                                 payload: pcm))
     }
 
     /// Reports the app's current camera-control state so remote UIs
@@ -362,6 +428,7 @@ final class StreamClient {
             // would be enqueued into the dead connection without limit.
             if self.inFlightFrames >= Self.maxInFlightFrames {
                 self.droppedFrames += 1
+                self.diagVideoDropped += 1
                 self.waitingForKeyframe = true
                 return
             }
@@ -371,10 +438,16 @@ final class StreamClient {
                 // Broken reference chain: skip this frame, and — now that
                 // there's room to actually send one — ask the encoder for
                 // the keyframe that restarts the stream.
+                self.diagVideoDropped += 1
                 self.onFrameDropped?()
                 return
             }
             self.inFlightFrames += 1
+            self.diagVideoSent += 1
+            self.diagVideoBytes += frame.data.count
+            if frame.isKeyframe {
+                self.diagKeyframesSent += 1
+            }
             let flags: OBSCProtocol.Flags = frame.isKeyframe ? [.keyframe] : []
             self.sendOnQueue(OBSCProtocol.packet(type: .video,
                                                  flags: flags,

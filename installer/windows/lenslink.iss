@@ -36,6 +36,13 @@ OutputDir=.
 WizardStyle=modern
 SolidCompression=yes
 
+[InstallDelete]
+; Pre-1.0 builds shipped as "ios-camera-source". If a copy is still present
+; it loads first, registers the source id, and OBS rejects the current
+; plugin as a duplicate — the user silently keeps running the old code.
+Type: files; Name: "{app}\obs-plugins\64bit\ios-camera-source.dll"
+Type: filesandordirs; Name: "{app}\data\obs-plugins\ios-camera-source"
+
 [Files]
 Source: "stage\obs-plugins\64bit\lenslink.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
 Source: "stage\data\obs-plugins\lenslink\*"; DestDir: "{app}\data\obs-plugins\lenslink"; Flags: ignoreversion recursesubdirs

@@ -40,11 +40,26 @@ enum obsc_packet_type {
 	 * Used only as a timing reference to auto-calibrate lip sync; it is
 	 * never played out. See docs/PROTOCOL.md. */
 	OBSC_PKT_AUDIO = 9,
+	/* Screen-mirror system audio, app → plugin. Payload is raw 48 kHz
+	 * stereo signed-16-bit-LE interleaved PCM, meant to be played (unlike
+	 * OBSC_PKT_AUDIO, which is a lip-sync reference). pts = capture time
+	 * of the first sample, same clock as video. */
+	OBSC_PKT_SCREEN_AUDIO = 10,
+	/* Diagnostics, app/extension → plugin. Payload is a short UTF-8 text
+	 * line describing the sender's internal counters. The plugin echoes it
+	 * into the OBS log so both ends of the pipeline show up in one place —
+	 * useful because the broadcast extension has no console of its own.
+	 * Purely informational; ignored when diagnostics logging is off. */
+	OBSC_PKT_DIAG = 11,
 };
 
 /* Reference-audio format (fixed). */
 #define OBSC_AUDIO_SAMPLE_RATE 16000
 #define OBSC_AUDIO_CHANNELS 1
+
+/* Screen-mirror system-audio format (fixed): 48 kHz stereo S16LE. */
+#define OBSC_SCREEN_AUDIO_SAMPLE_RATE 48000
+#define OBSC_SCREEN_AUDIO_CHANNELS 2
 
 #define OBSC_FLAG_KEYFRAME 0x0001
 

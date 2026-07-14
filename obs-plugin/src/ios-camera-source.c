@@ -15,6 +15,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "net-compat.h"
 #include "protocol.h"
@@ -36,6 +37,7 @@
 #define S_AUTO_CALIBRATE "audio_auto_calibrate"
 #define S_AUTO_VIDEO_DELAY "audio_auto_video_delay"
 #define S_WEB_CONTROL "web_control"
+#define S_DIAGNOSTICS "diagnostics"
 
 /* Built-in OBS "Video Delay (Async)" filter. */
 #define ASYNC_DELAY_FILTER_ID "async_delay_filter"
@@ -68,6 +70,7 @@ struct ios_camera_source {
 	char host[128];
 	char usb_device[64]; /* pinned UDID for USB mode; "" = auto-assign */
 	volatile bool hw_decode;
+	volatile bool diagnostics; /* verbose pipeline logging to the OBS log */
 
 	/* Guarded by status_mutex (shared with the status string). */
 	bool audio_sync;
@@ -105,9 +108,21 @@ struct ios_camera_source {
 	 * Guarded by status_mutex. */
 	char device_state[1024];
 
+	/* The current connection is a screen mirror (no camera controls).
+	 * Guarded by status_mutex; lets the web panel hide dead controls. */
+	bool is_screen;
+
 	pthread_mutex_t status_mutex;
 	struct dstr status;
 };
+
+bool ios_camera_is_screen(struct ios_camera_source *s)
+{
+	pthread_mutex_lock(&s->status_mutex);
+	bool v = s->is_screen;
+	pthread_mutex_unlock(&s->status_mutex);
+	return v;
+}
 
 static enum connection_mode parse_mode(const char *mode)
 {
@@ -292,10 +307,26 @@ struct client_state {
 	struct send_buf out;
 	struct h264_decoder *decoder;
 	bool hw_failed; /* GPU decode failed once: stay on software */
+	bool is_screen; /* screen mirror (plays system audio) vs camera */
 	uint64_t next_decoder_attempt; /* cooldown after create failure */
 	enum AVCodecID codec_id;
 	char name[128];
 	struct latency_tracker lat;
+
+	/* Diagnostics for the screen-mirror pipeline (all counters cumulative
+	 * over the connection). Touched only by the server thread. */
+	uint64_t connected_ns;   /* HELLO arrival, for time-to-first-frame */
+	uint64_t video_packets;
+	uint64_t video_bytes;
+	uint64_t keyframes_seen;
+	uint64_t frames_output;  /* frames the decoder actually produced */
+	uint64_t decode_errors;
+	uint64_t audio_packets;
+	uint64_t audio_frames;
+	int audio_peak; /* loudest |sample| since the last heartbeat */
+	uint64_t last_diag_ns;   /* last heartbeat emission */
+	uint64_t first_frame_ns; /* 0 until the first decoded frame */
+	bool no_output_warned;   /* one-shot "keyframe but nothing decoded" */
 };
 
 static void send_buf_free(struct send_buf *b)
@@ -648,6 +679,21 @@ static void apply_audio_sync(struct ios_camera_source *s, int64_t latency_ns)
 }
 
 /* Forward queued remote-control commands to the device. */
+/* Asks the device to emit a fresh keyframe immediately. Best-effort control
+ * message (same JSON channel as camera controls); the screen extension
+ * honours it, the camera app ignores unknown commands. Used to avoid a
+ * multi-second black gap after swapping the decoder to software — the
+ * software decoder can only (re)start on a keyframe. */
+static void request_keyframe(struct client_state *c)
+{
+	static const char json[] = "{\"cmd\":\"keyframe\"}";
+	size_t len = sizeof(json) - 1;
+	uint8_t packet[OBSC_HEADER_SIZE + sizeof(json) - 1];
+	obsc_build_header(packet, OBSC_PKT_CONTROL, 0, 0, (uint32_t)len);
+	memcpy(packet + OBSC_HEADER_SIZE, json, len);
+	client_send(c, packet, sizeof(packet));
+}
+
 static void control_tick(struct ios_camera_source *s, struct client_state *c)
 {
 	char *pending[CONTROL_QUEUE_MAX];
@@ -727,6 +773,53 @@ static void latency_tick(struct ios_camera_source *s, struct client_state *c)
 	}
 }
 
+/* Periodic pipeline heartbeat to the OBS log (every ~2s while connected).
+ * The counts moving — or not — between beats is what pinpoints where a
+ * screen mirror stalls: no packets = nothing sent; packets but dec=0 =
+ * decode problem; frames but nothing on screen = an OBS transform issue. */
+static void diag_tick(struct ios_camera_source *s, struct client_state *c)
+{
+	if (!s->diagnostics || c->connected_ns == 0)
+		return;
+
+	uint64_t now = os_gettime_ns();
+	if (c->last_diag_ns && now - c->last_diag_ns < 2000000000ULL)
+		return;
+	c->last_diag_ns = now;
+
+	uint64_t elapsed_ms = (now - c->connected_ns) / 1000000ULL;
+	double secs = (double)elapsed_ms / 1000.0;
+	double mbps = secs > 0.0 ? (double)c->video_bytes * 8.0 / secs / 1e6
+				 : 0.0;
+
+	char frame_info[96];
+	if (c->frames_output > 0) {
+		int w = 0, h = 0;
+		const char *fmt = "?";
+		h264_decoder_last_frame(c->decoder, &w, &h, &fmt);
+		snprintf(frame_info, sizeof(frame_info), "%dx%d %s %s", w, h,
+			 fmt,
+			 (c->decoder && h264_decoder_is_hw(c->decoder)) ? "GPU"
+									: "CPU");
+	} else {
+		snprintf(frame_info, sizeof(frame_info), "NO FRAMES DECODED");
+	}
+
+	blog(LOG_INFO,
+	     "[lenslink][diag] %s t=%llus | vid pkt=%llu kf=%llu dec=%llu "
+	     "err=%llu %.1f Mbps | aud pkt=%llu fr=%llu peak=%d%% | %s",
+	     c->is_screen ? "screen" : "camera",
+	     (unsigned long long)(elapsed_ms / 1000ULL),
+	     (unsigned long long)c->video_packets,
+	     (unsigned long long)c->keyframes_seen,
+	     (unsigned long long)c->frames_output,
+	     (unsigned long long)c->decode_errors, mbps,
+	     (unsigned long long)c->audio_packets,
+	     (unsigned long long)c->audio_frames,
+	     c->audio_peak * 100 / 32767, frame_info);
+	c->audio_peak = 0;
+}
+
 static void client_disconnect(struct ios_camera_source *s,
 			      struct client_state *c)
 {
@@ -746,6 +839,7 @@ static void client_disconnect(struct ios_camera_source *s,
 
 	pthread_mutex_lock(&s->status_mutex);
 	s->device_state[0] = 0;
+	s->is_screen = false;
 	pthread_mutex_unlock(&s->status_mutex);
 	set_status(s, "%s", T_("Status.Disconnected"));
 }
@@ -789,10 +883,19 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 				   : sizeof(json) - 1;
 		memcpy(json, payload, n);
 		extract_json_string(json, "name", c->name, sizeof(c->name));
-		blog(LOG_INFO, "[lenslink] client connected: %s",
-		     c->name[0] ? c->name : "(unnamed)");
-		set_status(s, "%s %s", T_("Status.Connected"),
-			   c->name[0] ? c->name : "iOS device");
+		char kind[16] = {0};
+		extract_json_string(json, "kind", kind, sizeof(kind));
+		c->is_screen = strcmp(kind, "screen") == 0;
+		c->connected_ns = os_gettime_ns();
+		pthread_mutex_lock(&s->status_mutex);
+		s->is_screen = c->is_screen;
+		pthread_mutex_unlock(&s->status_mutex);
+		blog(LOG_INFO, "[lenslink] client connected: %s (%s)",
+		     c->name[0] ? c->name : "(unnamed)",
+		     c->is_screen ? "screen" : "camera");
+		set_status(s, "%s %s%s", T_("Status.Connected"),
+			   c->name[0] ? c->name : "iOS device",
+			   c->is_screen ? T_("Status.ScreenSuffix") : "");
 		break;
 	}
 	case OBSC_PKT_VIDEO_CONFIG: {
@@ -812,6 +915,10 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 
 		char codec[32] = {0};
 		extract_json_string(json, "codec", codec, sizeof(codec));
+		char kind[16] = {0};
+		extract_json_string(json, "kind", kind, sizeof(kind));
+		if (kind[0])
+			c->is_screen = strcmp(kind, "screen") == 0;
 		enum AVCodecID id = strcmp(codec, "hevc") == 0
 					    ? AV_CODEC_ID_HEVC
 					    : AV_CODEC_ID_H264;
@@ -822,10 +929,16 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		}
 		break;
 	}
-	case OBSC_PKT_VIDEO:
+	case OBSC_PKT_VIDEO: {
+		c->video_packets++;
+		c->video_bytes += hdr->payload_size;
+		bool keyframe = (hdr->flags & OBSC_FLAG_KEYFRAME) != 0;
+		if (keyframe)
+			c->keyframes_seen++;
+
 		if (!c->decoder) {
 			/* Join on a keyframe so the decoder starts clean. */
-			if (!(hdr->flags & OBSC_FLAG_KEYFRAME))
+			if (!keyframe)
 				break;
 			/* Creation can fail persistently (e.g. no HEVC
 			 * decoder in this FFmpeg build). Dropping the
@@ -851,6 +964,7 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		}
 		if (!h264_decoder_decode(c->decoder, s->source, payload,
 					 hdr->payload_size, hdr->pts_ns)) {
+			c->decode_errors++;
 			if (h264_decoder_is_hw(c->decoder)) {
 				/* GPU path misbehaved: recreate in software
 				 * for the rest of this connection. */
@@ -867,7 +981,72 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			break;
 		}
 		latency_on_frame(&c->lat, hdr->pts_ns, os_gettime_ns());
+
+		/* First decoded frame is the key signal: if we see this, decode
+		 * works and any "black" is downstream (OBS transform/render). If
+		 * we never see it despite a keyframe going in, decode is the
+		 * problem. */
+		uint64_t out = h264_decoder_frames_output(c->decoder);
+		if (out > c->frames_output) {
+			c->frames_output = out;
+			if (c->first_frame_ns == 0) {
+				c->first_frame_ns = os_gettime_ns();
+				int w = 0, h = 0;
+				const char *fmt = "?";
+				h264_decoder_last_frame(c->decoder, &w, &h,
+							&fmt);
+				blog(LOG_INFO,
+				     "[lenslink] first decoded frame: %dx%d %s "
+				     "(%s) after %llu ms, %llu pkt(s)",
+				     w, h, fmt,
+				     h264_decoder_is_hw(c->decoder) ? "GPU"
+								    : "CPU",
+				     (unsigned long long)((c->first_frame_ns -
+							   c->connected_ns) /
+							  1000000ULL),
+				     (unsigned long long)c->video_packets);
+			}
+		}
+
+		/* Watchdog: a keyframe went in and packets keep coming, but the
+		 * decoder has produced nothing. The hardware path silently
+		 * accepts packets yet emits no frames for some streams — notably
+		 * tall, non-16-aligned screen-mirror resolutions on D3D11VA
+		 * (e.g. 886x1918). avcodec_send_packet succeeds and
+		 * avcodec_receive_frame just returns EAGAIN forever, so decode
+		 * "succeeds" while OBS stays black. Auto-fall back to software
+		 * instead of leaving a black source; hardware stays the default
+		 * and is retried on the next connection. ~10 packets is ~1/6 s
+		 * at 60 fps — long enough not to trip on a decoder's normal
+		 * one-frame startup, short enough to recover quickly. */
+		if (c->frames_output == 0 && c->keyframes_seen > 0 &&
+		    c->video_packets >= 10) {
+			if (c->decoder && h264_decoder_is_hw(c->decoder) &&
+			    !c->hw_failed) {
+				blog(LOG_WARNING,
+				     "[lenslink] hardware decoder produced no "
+				     "frames after %llu packets — falling back "
+				     "to software decoding",
+				     (unsigned long long)c->video_packets);
+				c->hw_failed = true;
+				h264_decoder_destroy(c->decoder);
+				c->decoder = NULL;
+				/* Recreated in software on the next keyframe;
+				 * ask for one now so recovery is immediate
+				 * instead of waiting up to ~2 s for the
+				 * encoder's periodic keyframe. */
+				request_keyframe(c);
+			} else if (!c->no_output_warned) {
+				c->no_output_warned = true;
+				blog(LOG_WARNING,
+				     "[lenslink] decoded 0 frames after %llu "
+				     "packets incl. a keyframe — waiting for a "
+				     "keyframe to (re)start decoding",
+				     (unsigned long long)c->video_packets);
+			}
+		}
 		break;
+	}
 	case OBSC_PKT_PING:
 		break;
 	case OBSC_PKT_STATE: {
@@ -909,6 +1088,50 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		pthread_mutex_unlock(&s->lipsync_mutex);
 		break;
 	}
+	case OBSC_PKT_SCREEN_AUDIO: {
+		/* 48 kHz stereo S16LE interleaved, played as the source's
+		 * audio. pts is in the same clock as the video frames, so
+		 * OBS keeps A/V aligned for this async source. */
+		size_t bytes_per_frame =
+			OBSC_SCREEN_AUDIO_CHANNELS * sizeof(int16_t);
+		struct obs_source_audio audio = {0};
+		audio.data[0] = payload;
+		audio.frames = (uint32_t)(hdr->payload_size / bytes_per_frame);
+		audio.speakers = SPEAKERS_STEREO;
+		audio.format = AUDIO_FORMAT_16BIT;
+		audio.samples_per_sec = OBSC_SCREEN_AUDIO_SAMPLE_RATE;
+		audio.timestamp = hdr->pts_ns;
+		if (audio.frames) {
+			obs_source_output_audio(s->source, &audio);
+			c->audio_packets++;
+			c->audio_frames += audio.frames;
+			/* Peak level for the heartbeat: distinguishes "real
+			 * audio arriving" from "a healthy stream of silence"
+			 * (DRM apps mute themselves during broadcasts, so the
+			 * packets keep flowing with nothing in them). */
+			if (s->diagnostics) {
+				const int16_t *pcm = (const int16_t *)payload;
+				size_t n = hdr->payload_size / 2;
+				for (size_t i = 0; i < n; i++) {
+					int v = abs((int)pcm[i]);
+					if (v > c->audio_peak)
+						c->audio_peak = v;
+				}
+			}
+		}
+		break;
+	}
+	case OBSC_PKT_DIAG:
+		/* The phone/extension's own counters, surfaced in the OBS log so
+		 * the whole pipeline is visible in one place. */
+		if (s->diagnostics && hdr->payload_size) {
+			int len = hdr->payload_size < 400
+					  ? (int)hdr->payload_size
+					  : 400;
+			blog(LOG_INFO, "[lenslink][phone] %.*s", len,
+			     (const char *)payload);
+		}
+		break;
 	default:
 		blog(LOG_WARNING, "[lenslink] unknown packet type %d",
 		     hdr->type);
@@ -1182,7 +1405,10 @@ static void dial_loop(struct ios_camera_source *s)
 				continue;
 			}
 			usb_id = devs[chosen].id;
-			set_status(s, "%s", T_("Status.WaitingUSB"));
+			/* Distinct from WaitingUSB: the phone IS here, we're
+			 * waiting for something on it to listen (camera app
+			 * started, or a screen broadcast running). */
+			set_status(s, "%s", T_("Status.USBFound"));
 			sock = usbmux_connect_device(usb_id, OBSC_USB_PORT);
 		} else if (!s->host[0]) {
 			set_status(s, "%s", T_("Status.NoHost"));
@@ -1228,6 +1454,7 @@ static void dial_loop(struct ios_camera_source *s)
 				client_flush(&client);
 			latency_tick(s, &client);
 			control_tick(s, &client);
+			diag_tick(s, &client);
 			if (client.out.failed)
 				break;
 			if ((ret & NET_WAIT_READ) &&
@@ -1294,6 +1521,7 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 	obs_source_set_async_unbuffered(
 		s->source, obs_data_get_bool(settings, S_LOW_LATENCY));
 	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
+	s->diagnostics = obs_data_get_bool(settings, S_DIAGNOSTICS);
 
 	pthread_mutex_lock(&s->status_mutex);
 	bool was_syncing = s->audio_sync && s->audio_source[0];
@@ -1388,6 +1616,7 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	obs_source_set_async_unbuffered(
 		source, obs_data_get_bool(settings, S_LOW_LATENCY));
 	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
+	s->diagnostics = obs_data_get_bool(settings, S_DIAGNOSTICS);
 	s->audio_sync = obs_data_get_bool(settings, S_AUDIO_SYNC);
 	s->audio_device_latency_ms =
 		(int)obs_data_get_int(settings, S_AUDIO_LATENCY);
@@ -1449,6 +1678,7 @@ static void ios_camera_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, S_AUTO_CALIBRATE, false);
 	obs_data_set_default_bool(settings, S_AUTO_VIDEO_DELAY, false);
 	obs_data_set_default_bool(settings, S_WEB_CONTROL, true);
+	obs_data_set_default_bool(settings, S_DIAGNOSTICS, true);
 }
 
 static bool add_audio_source(void *data, obs_source_t *source)
@@ -1544,6 +1774,10 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 
 	obs_properties_add_bool(props, S_WEB_CONTROL, T_("WebControl"));
 
+	obs_property_t *diag =
+		obs_properties_add_bool(props, S_DIAGNOSTICS, T_("Diagnostics"));
+	obs_property_set_long_description(diag, T_("Diagnostics.Desc"));
+
 	obs_property_t *status = obs_properties_add_text(
 		props, "status_info", T_("Status"), OBS_TEXT_INFO);
 	if (s) {
@@ -1562,7 +1796,10 @@ static obs_properties_t *ios_camera_get_properties(void *data)
 struct obs_source_info ios_camera_source_info = {
 	.id = "ios_camera_source",
 	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_DO_NOT_DUPLICATE,
+	/* AUDIO too: screen mirroring plays the phone's system audio through
+	 * this source (the camera path leaves it silent). */
+	.output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO |
+			OBS_SOURCE_DO_NOT_DUPLICATE,
 	.get_name = ios_camera_get_name,
 	.create = ios_camera_create,
 	.destroy = ios_camera_destroy,

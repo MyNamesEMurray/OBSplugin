@@ -3,6 +3,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
 #include <libavutil/pixfmt.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/hwcontext.h>
 
 #include <media-io/video-io.h>
@@ -17,6 +18,12 @@ struct h264_decoder {
 	AVBufferRef *hw_device;
 	enum AVPixelFormat hw_pix_fmt;
 	bool is_hw;
+
+	/* Diagnostics. */
+	uint64_t frames_output;
+	int last_width;
+	int last_height;
+	const char *last_format_name;
 };
 
 /* GPU decode APIs to try, best-first per platform. */
@@ -137,6 +144,26 @@ fail:
 bool h264_decoder_is_hw(const struct h264_decoder *dec)
 {
 	return dec && dec->is_hw;
+}
+
+uint64_t h264_decoder_frames_output(const struct h264_decoder *dec)
+{
+	return dec ? dec->frames_output : 0;
+}
+
+bool h264_decoder_last_frame(const struct h264_decoder *dec, int *width,
+			     int *height, const char **format_name)
+{
+	if (!dec || dec->frames_output == 0)
+		return false;
+	if (width)
+		*width = dec->last_width;
+	if (height)
+		*height = dec->last_height;
+	if (format_name)
+		*format_name = dec->last_format_name ? dec->last_format_name
+						    : "?";
+	return true;
 }
 
 void h264_decoder_destroy(struct h264_decoder *dec)
@@ -261,6 +288,13 @@ bool h264_decoder_decode(struct h264_decoder *dec, obs_source_t *source,
 					: os_gettime_ns();
 
 		obs_source_output_video(source, &out);
+
+		dec->frames_output++;
+		dec->last_width = out_frame->width;
+		dec->last_height = out_frame->height;
+		dec->last_format_name =
+			av_get_pix_fmt_name(out_frame->format);
+
 		av_frame_unref(dec->frame);
 	}
 

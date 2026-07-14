@@ -60,7 +60,10 @@ static const char control_page[] =
 	"<header><h1>LensLink</h1>"
 	"<div class='pill'><span class='dot' id='dot'></span>"
 	"<span id='status'>connecting&hellip;</span></div></header>"
-	"<div class='panel'>"
+	/* Shown instead of the controls for a screen-mirror source. */
+	"<div class='panel' id='screennote' style='display:none'>"
+	"Screen mirroring &mdash; camera controls don&rsquo;t apply.</div>"
+	"<div class='panel' id='panel'>"
 	"<div class='row'>"
 	"<svg class='ic' viewBox='0 0 24 24' fill='none' stroke='currentColor' "
 	"stroke-width='2' stroke-linecap='round'><circle cx='11' cy='11' r='7'/>"
@@ -105,7 +108,8 @@ static const char control_page[] =
 	"const $=id=>document.getElementById(id);"
 	"const dotEl=$('dot'),statusEl=$('status'),zoomEl=$('zoom'),zvEl=$('zv'),"
 	"expEl=$('exposure'),evEl=$('ev'),afEl=$('af'),mfEl=$('mf'),lensEl=$('lens'),"
-	"fhintEl=$('fhint'),flashlightEl=$('flashlight'),flipEl=$('flip'),lensselEl=$('lenssel');"
+	"fhintEl=$('fhint'),flashlightEl=$('flashlight'),flipEl=$('flip'),lensselEl=$('lenssel'),"
+	"panelEl=$('panel'),screennoteEl=$('screennote');"
 	"const COL={live:'#30D158',amber:'#FF9F0A',red:'#FF453A',grey:'#8E8E93'};"
 	"let lastTouch=0;const touch=()=>lastTouch=Date.now();"
 	"const send=o=>{touch();"
@@ -138,6 +142,10 @@ static const char control_page[] =
 	"async function poll(){try{"
 	"const s=await(await fetch('/api/status')).json();"
 	"statusEl.textContent=s.status||'idle';dotEl.style.background=statusColor(s.status);"
+	/* Screen mirror has no camera controls: show the note instead. */
+	"panelEl.style.display=s.screen?'none':'';"
+	"screennoteEl.style.display=s.screen?'':'none';"
+	"if(s.screen)return;"
 	"const st=await(await fetch('/api/state')).json();"
 	/* Don't fight the operator's hand: only mirror app state when the panel
 	 * hasn't been touched for a couple of seconds. */
@@ -326,7 +334,9 @@ static void handle_client(struct web_control *wc, socket_t client)
 		json_escape(status, escaped, sizeof(escaped));
 
 		char json[600];
-		snprintf(json, sizeof(json), "{\"status\":\"%s\"}", escaped);
+		snprintf(json, sizeof(json), "{\"status\":\"%s\",\"screen\":%s}",
+			 escaped,
+			 ios_camera_is_screen(wc->source) ? "true" : "false");
 		respond(client, "200 OK", "application/json", json);
 		return;
 	}

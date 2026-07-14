@@ -17,6 +17,9 @@ targets:
     platform: iOS
     sources:
       - Sources
+    dependencies:
+      # Embeds the screen-mirror broadcast extension in the app bundle.
+      - target: LensLinkBroadcast
     info:
       path: Sources/Info.plist
       properties:
@@ -57,3 +60,39 @@ targets:
         CURRENT_PROJECT_VERSION: "1" # CI overrides with the run number
         # Set your Apple Developer team to run on a device:
         # DEVELOPMENT_TEAM: XXXXXXXXXX
+
+  # Screen mirroring: a ReplayKit broadcast-upload extension captures the
+  # whole screen + system audio and streams it to the plugin over the same
+  # wire protocol as the camera (so USB via usbmuxd works unchanged). It
+  # shares the protocol/network/encoder code with the app.
+  LensLinkBroadcast:
+    type: app-extension
+    platform: iOS
+    sources:
+      - BroadcastExtension
+      - path: Sources/Protocol.swift
+      - path: Sources/StreamClient.swift
+      - path: Sources/VideoEncoder.swift
+    info:
+      path: BroadcastExtension/Info.plist
+      properties:
+        CFBundleDisplayName: LensLink Screen
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Needed so the extension can accept the plugin's LAN connection
+        # over Wi-Fi (USB via usbmuxd doesn't require it).
+        NSLocalNetworkUsageDescription: >-
+          LensLink sends your screen to OBS Studio on your local network.
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer
+    settings:
+      base:
+        # Must be a child of the app's bundle id.
+        PRODUCT_BUNDLE_IDENTIFIER: com.exaltedpixels.LensLinkCamera.broadcast
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1" # matched to the app by CI

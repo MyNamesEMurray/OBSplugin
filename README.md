@@ -70,6 +70,10 @@ blanks the source.
   zoom, tap-to-focus, exposure, focus lock, flashlight, camera flip) and
   **from your computer** via a browser panel at
   `http://localhost:9980` (zoom / exposure / focus / flashlight / flip).
+- **Screen mirroring.** Instead of the camera, mirror your whole iPhone/iPad
+  screen into the same OBS source, with the app's audio — great for mobile
+  games or app demos. Tap **Mirror screen to OBS** in the app (works over
+  Wi-Fi or USB). Your microphone isn't sent — mic yourself in OBS as usual.
 - **Automatic lip sync.** The plugin measures the camera's latency and can
   automatically line up a separate microphone with the video — no guessing
   at delay values. (See "Lip sync" below.)
@@ -77,6 +81,30 @@ blanks the source.
   quality briefly and recovers, instead of piling up latency.
 - **Battery saver.** While streaming, the phone screen dims after a few
   seconds; tap to wake it.
+
+## Screen mirroring
+
+Tap **Mirror screen to OBS** in the app to send your whole iPhone/iPad
+screen (plus the app's audio) into the same OBS source. It uses iOS's
+built-in screen broadcast, so it works from any app — pick **LensLink
+Screen** in the broadcast picker and tap **Start Broadcast**.
+
+**Locking the source size.** A screen mirror reports whatever resolution
+iOS is broadcasting, and that can differ between apps and orientations, so
+the OBS source may resize when you switch. To pin it to a fixed box on your
+canvas, right-click the source → **Transform** → **Edit Transform…** and set
+**Bounding Box Type** to **Scale to inner bounds** ("Fit"). OBS then scales
+each incoming size to fit your box instead of resizing the layout.
+
+<p align="center">
+  <img src="assets/screen-fit-transform.png"
+       alt="OBS Edit Transform dialog with Bounding Box Type set to Fit"
+       width="420">
+</p>
+
+The browser control panel at `http://localhost:9980` hides the camera
+controls automatically while a screen mirror is connected — none of them
+(zoom, focus, flashlight) apply to a screen.
 
 ## Lip sync
 
@@ -110,6 +138,13 @@ camera expose faster).
 - **USB device not found (Windows):** make sure iTunes is installed — it
   provides the driver the plugin needs — and tap **Trust** on the phone
   when prompted.
+- **Source shows as "iOS Camera" / updates don't seem to apply:** an old
+  pre-1.0 copy of the plugin (`ios-camera-source.dll`) is still installed
+  and wins over the current one (the OBS log shows *"Source
+  'ios_camera_source' already exists"*). Delete
+  `obs-plugins\64bit\ios-camera-source.dll` and
+  `data\obs-plugins\ios-camera-source\` from your OBS folder, then restart
+  OBS. The installer now removes it automatically.
 - **The app stops working after a week:** free Apple IDs expire sideloaded
   apps every 7 days. Re-install it with Sideloadly to refresh; your
   settings are kept.

@@ -8,6 +8,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 struct ios_camera_source;
 struct web_control;
@@ -19,6 +20,7 @@ void ios_camera_copy_status(struct ios_camera_source *s, char *buf,
 			    size_t size);
 void ios_camera_copy_state(struct ios_camera_source *s, char *buf,
 			   size_t size);
+bool ios_camera_is_screen(struct ios_camera_source *s);
 
 struct web_control *web_control_start(struct ios_camera_source *source,
 				      uint16_t port);
