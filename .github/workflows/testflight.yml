@@ -54,34 +54,28 @@ jobs:
           mkdir -p ~/private_keys
           echo "$KEY_P8" > ~/private_keys/AuthKey_${KEY_ID}.p8
 
-      - name: Archive (cloud-signed)
+      - name: Archive (unsigned)
         env:
-          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -o pipefail
           # Build number must strictly increase per upload; the run number
           # is monotonic. Offset keeps it clear of any earlier manual builds.
           BUILD_NUMBER=$(( GITHUB_RUN_NUMBER + 1000 ))
-          # Automatic signing + -allowProvisioningUpdates is the whole
-          # story: an *archive* selects distribution signing and creates
-          # the App Store profile via the API key with no registered
-          # device. Do NOT override CODE_SIGN_IDENTITY — a manual identity
-          # conflicts with automatic style ("conflicting provisioning
-          # settings"). Export (next step) re-signs for the store.
+          # Archive WITHOUT signing. Automatic signing here defaults to a
+          # *development* profile (get-task-allow=1), which needs a
+          # registered device this CI account has none of. The export step
+          # does all the signing with a distribution profile instead
+          # (distribution profiles need no device).
           xcodebuild archive \
             -project LensLink.xcodeproj \
             -scheme LensLink \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/LensLink.xcarchive" \
-            -authenticationKeyPath ~/private_keys/AuthKey_${KEY_ID}.p8 \
-            -authenticationKeyID "$KEY_ID" \
-            -authenticationKeyIssuerID "$ISSUER_ID" \
-            -allowProvisioningUpdates \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
         working-directory: ios-app
 
@@ -92,18 +86,20 @@ jobs:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -o pipefail
+          # signingStyle automatic + the API key: export creates/uses the
+          # App Store distribution profile and signs the (unsigned) archive,
+          # then 'destination: upload' hands it straight to TestFlight.
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>method</key><string>app-store-connect</string>
             <key>destination</key><string>upload</string>
+            <key>signingStyle</key><string>automatic</string>
             <key>teamID</key><string>${TEAM_ID}</string>
             <key>uploadSymbols</key><true/>
           </dict></plist>
           PLIST
-          # 'destination: upload' hands the build straight to App Store
-          # Connect / TestFlight — no separate altool step.
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/LensLink.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
