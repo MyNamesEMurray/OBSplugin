@@ -10,9 +10,8 @@ struct ContentView: View {
     @State private var availableResolutions: [CameraManager.Resolution] = []
     @State private var availableFrameRates: [Int] = []
 
-    // Collapsible help: the connection instructions are essential exactly
-    // once. Persisted so the form stays minimal after the user has
-    // collapsed them, keeping Start/Mirror near the top of the screen.
+    // Collapsible extras: essential exactly once, then noise. Persisted so
+    // the form stays compact after the user has read them.
     @AppStorage("showConnectionHelp") private var showConnectionHelp = true
     @AppStorage("showMirrorTools") private var showMirrorTools = false
 
@@ -24,12 +23,15 @@ struct ContentView: View {
         }
     }
 
+    // The form is three parallel modules — Connect, Camera, Screen mirror —
+    // each saying which OBS source it talks to and ending in the same
+    // full-width action button, plus small Options/About tails.
     private var settingsForm: some View {
         NavigationView {
             Form {
                 connectSection
-                streamSection
                 cameraSection
+                screenMirrorSection
                 optionsSection
                 aboutSection
             }
@@ -64,8 +66,10 @@ struct ContentView: View {
         }
     }
 
-    /// Status + the phone's address on one compact line; the longer
-    /// instructions collapse away once read.
+    // MARK: - Connect
+
+    /// Status + the phone's address on one line; setup instructions
+    /// collapse away once read.
     private var connectSection: some View {
         Section {
             HStack(spacing: Theme.Space.m) {
@@ -82,76 +86,99 @@ struct ContentView: View {
                 }
             }
             DisclosureGroup("How to connect", isExpanded: $showConnectionHelp) {
-                if let ip = wifiIP {
-                    Label {
-                        Text("In OBS, add a \"LensLink Camera\" source and enter \(Text(ip).bold()) as the Phone IP. (Phone and computer must be on the same Wi-Fi.)")
-                            .font(.callout)
-                            .foregroundColor(.secondary)
-                    } icon: {
-                        Image(systemName: "wifi")
-                    }
-                } else {
-                    Label {
-                        Text("No Wi-Fi address found — connect to Wi-Fi, or use a USB cable.")
-                            .font(.callout)
-                            .foregroundColor(.secondary)
-                    } icon: {
-                        Image(systemName: "wifi.slash")
-                    }
-                }
                 Label {
-                    Text("Or plug in a USB cable and set the OBS source's Connection to \"USB cable\" (needs iTunes on Windows). No Wi-Fi required.")
+                    Text("Install the LensLink plugin in OBS Studio (see the GitHub link below), then add the source you want — camera or screen — from **Sources → +**.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                 } icon: {
-                    Image(systemName: "cable.connector")
+                    Image(systemName: "1.circle")
+                }
+                Label {
+                    if let ip = wifiIP {
+                        Text("Point it at this phone: enter \(Text(ip).bold()) as the Phone IP (same Wi-Fi), or plug in a USB cable and set Connection to \"USB cable\" (Windows needs iTunes).")
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("No Wi-Fi address found — connect to Wi-Fi, or plug in a USB cable and set the source's Connection to \"USB cable\" (Windows needs iTunes).")
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "2.circle")
                 }
             }
+        } header: {
+            Text("Connect")
         }
     }
 
-    @State private var probeResult: String?
-    @State private var extensionStatus = ""
+    // MARK: - Camera
 
-    /// Both ways to stream, side by side near the top: the camera (the
-    /// primary action) and the screen mirror (a broadcast extension, so it
-    /// uses the system picker). Mirror diagnostics hide in a disclosure.
-    private var streamSection: some View {
+    private var cameraSection: some View {
         Section {
-            Button {
-                Task { await streamer.start() }
-            } label: {
-                Label("Start streaming to OBS", systemImage: "video.fill")
-                    .font(.body.weight(.semibold))
-                    .frame(maxWidth: .infinity)
+            Picker("Lens", selection: $streamer.selectedLens) {
+                ForEach(streamer.availableLenses) { lens in
+                    Text(lens.label).tag(lens)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
-            .listRowInsets(EdgeInsets())
-            .listRowBackground(Color.clear)
+
+            Picker("Resolution", selection: $streamer.resolution) {
+                ForEach(availableResolutions) { resolution in
+                    Text(resolution.rawValue).tag(resolution)
+                }
+            }
+
+            Picker("Frame rate", selection: $streamer.fps) {
+                ForEach(availableFrameRates, id: \.self) { fps in
+                    Text("\(fps) fps").tag(fps)
+                }
+            }
+
+            Picker("Codec", selection: $streamer.codec) {
+                Text(VideoCodec.h264.label).tag(VideoCodec.h264)
+                if VideoEncoder.isSupported(.hevc) {
+                    Text(VideoCodec.hevc.label).tag(VideoCodec.hevc)
+                }
+            }
 
             if streamer.cameraPermissionDenied || streamer.micPermissionDenied {
-                Button("Open Settings") {
+                Button("Camera access denied — open Settings") {
                     if let url = URL(string: UIApplication.openSettingsURLString) {
                         UIApplication.shared.open(url)
                     }
                 }
             }
 
-            HStack(spacing: Theme.Space.m) {
-                BroadcastButton()
-                    .frame(width: 44, height: 44)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Mirror your screen instead")
-                        .font(.body.weight(.semibold))
-                    Text("Whole screen + app audio, to a \"LensLink Screen\" source.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+            Button {
+                Task { await streamer.start() }
+            } label: {
+                ActionRowLabel(title: "Start camera stream",
+                               systemImage: "video.fill")
             }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+        } header: {
+            Text("Camera")
+        } footer: {
+            Text("Streams to a \"LensLink Camera\" source in OBS.")
+        }
+    }
 
+    // MARK: - Screen mirror
+
+    @State private var probeResult: String?
+    @State private var extensionStatus = ""
+
+    /// Same shape as the camera module: content, then one full-width
+    /// action button. The button face is ours; the (invisible) system
+    /// broadcast picker stretched over it receives the tap, because iOS
+    /// won't start a broadcast any other way.
+    private var screenMirrorSection: some View {
+        Section {
             // Surface a broken extension unconditionally (sideloading can
-            // silently drop it); the healthy checkmark stays collapsed.
+            // silently drop it); the healthy checkmark lives in the tools
+            // disclosure below.
             if !extensionStatus.isEmpty && !extensionStatus.hasPrefix("✓") {
                 Text(extensionStatus)
                     .font(.caption)
@@ -183,6 +210,18 @@ struct ContentView: View {
                     }
                 }
             }
+
+            ZStack {
+                ActionRowLabel(title: "Start screen broadcast",
+                               systemImage: "rectangle.on.rectangle")
+                BroadcastPickerOverlay()
+            }
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+        } header: {
+            Text("Screen mirror")
+        } footer: {
+            Text("Streams your whole screen, with app audio, to a \"LensLink Screen\" source in OBS. DRM audio (Apple Music, Netflix) is muted by iOS during broadcasts.")
         }
         .onAppear {
             // Whether the extension survived sideloading — the broadcast
@@ -191,34 +230,7 @@ struct ContentView: View {
         }
     }
 
-    private var cameraSection: some View {
-        Section("Camera") {
-            Picker("Lens", selection: $streamer.selectedLens) {
-                ForEach(streamer.availableLenses) { lens in
-                    Text(lens.label).tag(lens)
-                }
-            }
-
-            Picker("Resolution", selection: $streamer.resolution) {
-                ForEach(availableResolutions) { resolution in
-                    Text(resolution.rawValue).tag(resolution)
-                }
-            }
-
-            Picker("Frame rate", selection: $streamer.fps) {
-                ForEach(availableFrameRates, id: \.self) { fps in
-                    Text("\(fps) fps").tag(fps)
-                }
-            }
-
-            Picker("Codec", selection: $streamer.codec) {
-                Text(VideoCodec.h264.label).tag(VideoCodec.h264)
-                if VideoEncoder.isSupported(.hevc) {
-                    Text(VideoCodec.hevc.label).tag(VideoCodec.hevc)
-                }
-            }
-        }
-    }
+    // MARK: - Options / About
 
     private var optionsSection: some View {
         // Section has no (title-string + footer-closure) initializer; the
@@ -252,4 +264,21 @@ struct ContentView: View {
         let build = info?["CFBundleVersion"] as? String ?? "?"
         return "LensLink v\(version) (\(build))"
     }()
+}
+
+/// The one action-button face used by every module, so "Start camera
+/// stream" and "Start screen broadcast" read as the same kind of control.
+private struct ActionRowLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.body.weight(.semibold))
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Theme.accent,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.chip))
+    }
 }
