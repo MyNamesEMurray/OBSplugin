@@ -15,6 +15,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "net-compat.h"
 #include "protocol.h"
@@ -322,6 +323,7 @@ struct client_state {
 	uint64_t decode_errors;
 	uint64_t audio_packets;
 	uint64_t audio_frames;
+	int audio_peak; /* loudest |sample| since the last heartbeat */
 	uint64_t last_diag_ns;   /* last heartbeat emission */
 	uint64_t first_frame_ns; /* 0 until the first decoded frame */
 	bool no_output_warned;   /* one-shot "keyframe but nothing decoded" */
@@ -805,7 +807,7 @@ static void diag_tick(struct ios_camera_source *s, struct client_state *c)
 
 	blog(LOG_INFO,
 	     "[lenslink][diag] %s t=%llus | vid pkt=%llu kf=%llu dec=%llu "
-	     "err=%llu %.1f Mbps | aud pkt=%llu fr=%llu | %s",
+	     "err=%llu %.1f Mbps | aud pkt=%llu fr=%llu peak=%d%% | %s",
 	     c->is_screen ? "screen" : "camera",
 	     (unsigned long long)(elapsed_ms / 1000ULL),
 	     (unsigned long long)c->video_packets,
@@ -813,7 +815,9 @@ static void diag_tick(struct ios_camera_source *s, struct client_state *c)
 	     (unsigned long long)c->frames_output,
 	     (unsigned long long)c->decode_errors, mbps,
 	     (unsigned long long)c->audio_packets,
-	     (unsigned long long)c->audio_frames, frame_info);
+	     (unsigned long long)c->audio_frames,
+	     c->audio_peak * 100 / 32767, frame_info);
+	c->audio_peak = 0;
 }
 
 static void client_disconnect(struct ios_camera_source *s,
@@ -1101,6 +1105,19 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			obs_source_output_audio(s->source, &audio);
 			c->audio_packets++;
 			c->audio_frames += audio.frames;
+			/* Peak level for the heartbeat: distinguishes "real
+			 * audio arriving" from "a healthy stream of silence"
+			 * (DRM apps mute themselves during broadcasts, so the
+			 * packets keep flowing with nothing in them). */
+			if (s->diagnostics) {
+				const int16_t *pcm = (const int16_t *)payload;
+				size_t n = hdr->payload_size / 2;
+				for (size_t i = 0; i < n; i++) {
+					int v = abs((int)pcm[i]);
+					if (v > c->audio_peak)
+						c->audio_peak = v;
+				}
+			}
 		}
 		break;
 	}

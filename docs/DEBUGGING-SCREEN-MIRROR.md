@@ -34,7 +34,7 @@ checkbox — leave it on while debugging, turn it off for quiet logs.
 Two heartbeat lines, one from each end, a few seconds apart:
 
 ```
-[lenslink][diag]  screen t=6s | vid pkt=372 kf=1 dec=360 err=0 5.8 Mbps | aud pkt=58 fr=139k | 886x1918 nv12 GPU
+[lenslink][diag]  screen t=6s | vid pkt=372 kf=1 dec=360 err=0 5.8 Mbps | aud pkt=58 fr=139k peak=64% | 886x1918 nv12 GPU
 [lenslink][phone] vid samp=380 enc=372 kf=1 builds=1 encErr=0 h264 886x1918 aud=60 | net sent=372 kf=1 drop=0 4180KiB aud=58 inflight=1 acc=1 connected
 ```
 
@@ -61,6 +61,8 @@ Watch which counters **move** between heartbeats.
 | Plugin `pkt` climbs, `kf=0` | No keyframe arrived to join on | Reconnect should force one; if not, the keyframe is being dropped by backpressure |
 | **Plugin `pkt` climbs incl. `kf>=1` but `dec=0`** | **Hardware decoder produces nothing — the classic black screen** | **Now auto-handled:** the plugin detects this within ~1/6 s, falls back to software decoding, and asks the phone for a fresh keyframe. You'll see `dec` start climbing a moment later. |
 | Plugin `dec` climbs but screen is black in OBS | Decode is fine; it's downstream | An OBS **transform** issue — check the source isn't scaled to nothing; try Right-click → Transform → Reset |
+| Plugin `aud pkt` climbs but `peak=0%` | The phone is sending a healthy stream of **silence** | DRM: Apple Music/Spotify/Netflix mute (or pause) themselves during broadcasts. Test with a game or YouTube in Safari. |
+| `peak` > 0 but you hear nothing on the PC | OBS received real audio; it just isn't monitored | Mixer meter should be moving. To *hear* it: Advanced Audio Properties → the source's **Audio Monitoring → Monitor and Output** (OBS never plays source audio locally by default). |
 
 The key line is the plugin's automatic fallback (no action needed):
 
