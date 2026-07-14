@@ -37,8 +37,9 @@ phone.
 **2. The LensLink app** — pick whichever suits you:
 
 - **TestFlight (recommended):** join the beta at
-  **[TESTFLIGHT-PUBLIC-LINK]** and install from the TestFlight app. Updates
-  arrive automatically; no computer or re-signing needed.
+  **<https://testflight.apple.com/join/N7Rth6m3>** and install from the
+  TestFlight app. Updates arrive automatically; no computer or re-signing
+  needed.
 - **Sideloading:** download `LensLink-unsigned.ipa` from
   [Releases](../../releases) and install it with
   [Sideloadly](https://sideloadly.io) and a free Apple ID (free accounts

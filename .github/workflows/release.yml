@@ -323,7 +323,8 @@ jobs:
             and extract it into `~/.config/obs-studio/plugins/`.
 
             **iOS app:** easiest is the TestFlight beta —
-            [TESTFLIGHT-PUBLIC-LINK] — which updates automatically.
+            https://testflight.apple.com/join/N7Rth6m3 — which updates
+            automatically.
             Alternatively, download `LensLink-unsigned.ipa` and sideload it
             with [Sideloadly](https://sideloadly.io) (Windows/macOS, free
             Apple ID; re-sign every 7 days).
