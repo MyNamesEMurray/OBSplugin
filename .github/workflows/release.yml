@@ -132,6 +132,106 @@ jobs:
             lenslink-windows-x64.zip
             LensLink-installer-windows-x64.exe
 
+  plugin-macos:
+    name: OBS plugin (macOS)
+    runs-on: macos-15
+    env:
+      OBS_REF: "32.1.2"
+      DEPS_TAG: "2025-08-23"
+    steps:
+      - uses: actions/checkout@v4
+
+      # No submodules here: cache-hit runs only need in-tree headers
+      # (libobs/); the recursive fetch runs only on a cache miss, inside
+      # the build step.
+      - name: Checkout obs-studio (for libobs)
+        uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_REF }}
+          path: obs-studio
+
+      - name: Download OBS prebuilt dependencies (FFmpeg)
+        run: |
+          curl -L -o deps.tar.xz "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/macos-deps-${{ env.DEPS_TAG }}-universal.tar.xz"
+          mkdir obs-deps
+          tar -xJf deps.tar.xz -C obs-deps
+
+      # "macos" in the key: cache keys are not runner-scoped, and the
+      # Windows job already uses libobs-<ref>-<tag> for its MSVC build.
+      - name: Cache libobs build
+        id: cache-libobs
+        uses: actions/cache@v4
+        with:
+          path: obs-build
+          key: libobs-macos-${{ env.OBS_REF }}-${{ env.DEPS_TAG }}
+
+      # Xcode generator: obs-studio's macOS CMake requires it. Universal
+      # (arm64 + x86_64) to match the deps bundle and the official OBS app.
+      - name: Build libobs
+        if: steps.cache-libobs.outputs.cache-hit != 'true'
+        run: |
+          git -C obs-studio submodule update --init --recursive
+          cmake -S obs-studio -B obs-build -G Xcode \
+            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="-" \
+            -DENABLE_UI=OFF -DENABLE_FRONTEND=OFF -DENABLE_PLUGINS=OFF \
+            -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF -DENABLE_WEBSOCKET=OFF \
+            -DENABLE_AJA=OFF
+          cmake --build obs-build --target libobs --config Release
+
+      - name: Build plugin
+        run: |
+          cmake -S obs-plugin -B plugin-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DLIBOBS_INCLUDE_DIR="$PWD/obs-studio/libobs;$PWD/obs-build/config" \
+            -DLIBOBS_LIBRARY="$PWD/obs-build/libobs/Release/libobs.framework" \
+            -DFFMPEG_INCLUDE_DIR="$PWD/obs-deps/include" \
+            -DAVCODEC_LIBRARY="$PWD/obs-deps/lib/libavcodec.dylib" \
+            -DAVUTIL_LIBRARY="$PWD/obs-deps/lib/libavutil.dylib"
+          cmake --build plugin-build
+
+      # Ad-hoc signature only: without an Apple Developer ID the bundle
+      # can't be notarized, so users clear the quarantine flag once (the
+      # release notes explain how).
+      - name: Package (extract into ~/Library/Application Support/obs-studio/plugins)
+        run: |
+          version="${{ inputs.tag_name || github.ref_name }}"
+          version="${version#v}"
+          mkdir -p stage/lenslink.plugin/Contents/MacOS \
+                   stage/lenslink.plugin/Contents/Resources
+          cp plugin-build/lenslink.so stage/lenslink.plugin/Contents/MacOS/lenslink
+          sed "s/@VERSION@/$version/" installer/macos/Info.plist \
+            > stage/lenslink.plugin/Contents/Info.plist
+          plutil -lint stage/lenslink.plugin/Contents/Info.plist
+          cp -R obs-plugin/data/ stage/lenslink.plugin/Contents/Resources/
+          codesign --force --sign - --deep stage/lenslink.plugin
+          ditto -c -k --keepParent stage/lenslink.plugin lenslink-macos-universal.zip
+
+      # One-click alternative to the zip: a .pkg that installs into the
+      # system-wide OBS plugin folder and shows up in pkgutil for removal.
+      - name: Build installer
+        run: |
+          version="${{ inputs.tag_name || github.ref_name }}"
+          version="${version#v}"
+          mkdir -p pkgroot
+          cp -R stage/lenslink.plugin pkgroot/
+          pkgbuild --root pkgroot \
+            --identifier com.lenslink.obs-plugin \
+            --version "$version" \
+            --install-location "/Library/Application Support/obs-studio/plugins" \
+            LensLink-installer-macos-universal.pkg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: |
+            lenslink-macos-universal.zip
+            LensLink-installer-macos-universal.pkg
+
   ios-app:
     name: iOS app (unsigned IPA)
     runs-on: macos-15
@@ -167,7 +267,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [plugin-linux, plugin-windows, ios-app]
+    needs: [plugin-linux, plugin-windows, plugin-macos, ios-app]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || inputs.tag_name != ''
     steps:
@@ -183,6 +283,8 @@ jobs:
           files: |
             dist/LensLink-installer-windows-x64.exe
             dist/lenslink-windows-x64.zip
+            dist/LensLink-installer-macos-universal.pkg
+            dist/lenslink-macos-universal.zip
             dist/lenslink-linux-x86_64.tar.gz
             dist/LensLink-unsigned.ipa
           body: |
@@ -193,6 +295,16 @@ jobs:
             folder automatically. Then restart OBS. (Prefer doing it by
             hand? `lenslink-windows-x64.zip` extracts into
             `C:\Program Files\obs-studio\`.) Built against OBS Studio 32.x.
+
+            **macOS (OBS plugin):** download and open
+            `LensLink-installer-macos-universal.pkg` (right-click → Open the
+            first time — the package is not notarized). Then restart OBS.
+            Prefer doing it by hand? Extract `lenslink-macos-universal.zip`
+            into `~/Library/Application Support/obs-studio/plugins/` and
+            clear the quarantine flag:
+            `xattr -dr com.apple.quarantine ~/Library/Application\ Support/obs-studio/plugins/lenslink.plugin`.
+            Universal binary (Apple Silicon + Intel), macOS 13+, built
+            against OBS Studio 32.x.
 
             **Linux (OBS plugin):** download `lenslink-linux-x86_64.tar.gz`
             and extract it into `~/.config/obs-studio/plugins/`.

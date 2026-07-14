@@ -148,6 +148,105 @@ jobs:
             stage/
             LensLink-installer-windows-x64.exe
 
+  obs-plugin-macos:
+    name: OBS plugin (macOS)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: macos-15
+    env:
+      # Keep in sync with the OBS release users run (same pins as the
+      # Windows job): the plugin links the FFmpeg dylibs from this deps
+      # bundle, and OBS must ship the same ones.
+      OBS_REF: "32.1.2"
+      DEPS_TAG: "2025-08-23"
+    steps:
+      - uses: actions/checkout@v4
+
+      # No submodules here: cache-hit runs only need in-tree headers
+      # (libobs/). The recursive fetch is minutes of overhead, so it moves
+      # into the cache-miss build step below.
+      - name: Checkout obs-studio (for libobs)
+        uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_REF }}
+          path: obs-studio
+
+      - name: Download OBS prebuilt dependencies (FFmpeg)
+        run: |
+          curl -L -o deps.tar.xz "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/macos-deps-${{ env.DEPS_TAG }}-universal.tar.xz"
+          mkdir obs-deps
+          tar -xJf deps.tar.xz -C obs-deps
+
+      # "macos" in the key: cache keys are not runner-scoped, and the
+      # Windows job already uses libobs-<ref>-<tag> for its MSVC build.
+      - name: Cache libobs build
+        id: cache-libobs
+        uses: actions/cache@v4
+        with:
+          path: obs-build
+          key: libobs-macos-${{ env.OBS_REF }}-${{ env.DEPS_TAG }}
+
+      # Xcode generator: obs-studio's macOS CMake requires it. Universal
+      # (arm64 + x86_64) to match the deps bundle and the official OBS app.
+      - name: Build libobs
+        if: steps.cache-libobs.outputs.cache-hit != 'true'
+        run: |
+          git -C obs-studio submodule update --init --recursive
+          cmake -S obs-studio -B obs-build -G Xcode \
+            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="-" \
+            -DENABLE_UI=OFF -DENABLE_FRONTEND=OFF -DENABLE_PLUGINS=OFF \
+            -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF -DENABLE_WEBSOCKET=OFF \
+            -DENABLE_AJA=OFF
+          cmake --build obs-build --target libobs --config Release
+
+      - name: Build plugin
+        run: |
+          cmake -S obs-plugin -B plugin-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-Wall -Wextra -Werror" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DLIBOBS_INCLUDE_DIR="$PWD/obs-studio/libobs;$PWD/obs-build/config" \
+            -DLIBOBS_LIBRARY="$PWD/obs-build/libobs/Release/libobs.framework" \
+            -DFFMPEG_INCLUDE_DIR="$PWD/obs-deps/include" \
+            -DAVCODEC_LIBRARY="$PWD/obs-deps/lib/libavcodec.dylib" \
+            -DAVUTIL_LIBRARY="$PWD/obs-deps/lib/libavutil.dylib"
+          cmake --build plugin-build
+
+      # Assemble the .plugin bundle on PRs too, so a broken Info.plist or
+      # layout change can't reach a release build. Takes seconds.
+      - name: Package (drop into ~/Library/Application Support/obs-studio/plugins)
+        run: |
+          mkdir -p stage/lenslink.plugin/Contents/MacOS \
+                   stage/lenslink.plugin/Contents/Resources
+          cp plugin-build/lenslink.so stage/lenslink.plugin/Contents/MacOS/lenslink
+          sed "s/@VERSION@/0.0.0/" installer/macos/Info.plist \
+            > stage/lenslink.plugin/Contents/Info.plist
+          plutil -lint stage/lenslink.plugin/Contents/Info.plist
+          cp -R obs-plugin/data/ stage/lenslink.plugin/Contents/Resources/
+          codesign --force --sign - --deep stage/lenslink.plugin
+
+      - name: Build installer
+        run: |
+          mkdir -p pkgroot
+          cp -R stage/lenslink.plugin pkgroot/
+          pkgbuild --root pkgroot \
+            --identifier com.lenslink.obs-plugin \
+            --version 0.0.0 \
+            --install-location "/Library/Application Support/obs-studio/plugins" \
+            LensLink-installer-macos-universal.pkg
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lenslink-macos-universal
+          path: |
+            stage/
+            LensLink-installer-macos-universal.pkg
+
   ios-app:
     name: iOS app (LensLink)
     needs: changes

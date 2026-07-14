@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Bundle manifest for lenslink.plugin. @VERSION@ is substituted by the
+     packaging step in the CI workflows (0.0.0 for PR validation builds). -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>lenslink</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.lenslink.obs-plugin</string>
+	<key>CFBundleName</key>
+	<string>LensLink</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+</dict>
+</plist>
