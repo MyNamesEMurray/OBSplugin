@@ -220,9 +220,13 @@ struct ContentView: View {
     }
 
     private var optionsSection: some View {
-        Section("Options") {
+        // Section has no (title-string + footer-closure) initializer; the
+        // header must be a closure too.
+        Section {
             Toggle("Dim screen while streaming", isOn: $streamer.dimWhileStreaming)
             Toggle("Auto lip-sync reference", isOn: $streamer.sendAudioReference)
+        } header: {
+            Text("Options")
         } footer: {
             Text("Dim: the screen dims after 10 seconds of streaming; tap to wake. Lip-sync: sends the phone mic to OBS purely as a timing reference so the plugin can auto-align your real microphone — it is never streamed or heard.")
         }
