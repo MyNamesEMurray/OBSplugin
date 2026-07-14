@@ -77,6 +77,7 @@ struct ContentView: View {
     }
 
     @State private var probeResult: String?
+    @State private var extensionStatus = ""
 
     /// Screen mirroring is a separate path (a broadcast extension), not the
     /// camera pipeline — so it lives in its own section with the system
@@ -94,6 +95,16 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                 }
             }
+            // Whether the extension survived sideloading — the broadcast
+            // picker can show a stale entry even when it didn't.
+            Text(extensionStatus)
+                .font(.caption)
+                .foregroundColor(
+                    extensionStatus.hasPrefix("✓") ? .secondary : .red)
+                .onAppear {
+                    extensionStatus =
+                        BroadcastProbe.installedExtensionDescription()
+                }
             // Diagnostic: verifies the broadcast extension's listener is
             // reachable on-device, independent of OBS/USB. Run it while a
             // broadcast is active.
