@@ -180,17 +180,23 @@ static bool find_int_after(const char *xml, const char *name, long *out)
 	return true;
 }
 
-/* Copies the string value of "<key>KEY</key><string>VALUE</string>" if it
- * occurs within reply[start, end). Returns false if not found in range. */
+/* Copies the string value of "<key>KEY</key> ... <string>VALUE</string>"
+ * if it occurs within reply[start, end). Returns false if not found in
+ * range. The two tags are matched separately: Apple Mobile Device Service
+ * pretty-prints its plists, so requiring them to be adjacent silently
+ * missed every SerialNumber/ConnectionType on Windows. */
 static bool region_string(const char *reply, size_t start, size_t end,
 			  const char *key, char *out, size_t out_size)
 {
 	char pattern[64];
-	snprintf(pattern, sizeof(pattern), "<key>%s</key><string>", key);
+	snprintf(pattern, sizeof(pattern), "<key>%s</key>", key);
 	const char *p = strstr(reply + start, pattern);
 	if (!p || (size_t)(p - reply) >= end)
 		return false;
-	p += strlen(pattern);
+	p = strstr(p + strlen(pattern), "<string>");
+	if (!p || (size_t)(p - reply) >= end)
+		return false;
+	p += strlen("<string>");
 	const char *e = strchr(p, '<');
 	if (!e)
 		return false;
