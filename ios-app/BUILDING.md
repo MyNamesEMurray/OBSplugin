@@ -41,6 +41,10 @@ both are required.
 
 ## Notes
 
+- **No Mac handy?** `ios-app/syntax-check.sh` parse-checks every Swift
+  source on Linux (it installs a Swift toolchain on first run). Syntax
+  only — SwiftUI/UIKit don't exist outside Xcode, so the full compile
+  still needs macOS (CI does it on every pull request).
 - The app stops streaming when backgrounded (iOS suspends camera capture);
   keep it in the foreground while live. The screen is kept awake
   automatically while streaming.
