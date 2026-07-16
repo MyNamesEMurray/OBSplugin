@@ -59,6 +59,8 @@ static const char control_page[] =
 	".primary{width:100%;height:44px;border:0;border-radius:12px;"
 	"background:var(--accent);color:#fff;font-size:15px;font-weight:600;"
 	"cursor:pointer}"
+	/* Stop is the one destructive control (docs/UI_DESIGN.md §1). */
+	".primary.danger{background:var(--red)}"
 	"</style></head><body>"
 	"<header><h1>LensLink</h1>"
 	"<div class='pill'><span class='dot' id='dot'></span>"
@@ -109,7 +111,12 @@ static const char control_page[] =
 	"stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>"
 	"<path d='M15 4 h5 v5'/><path d='M20 9 A8 8 0 0 0 6 6'/>"
 	"<path d='M9 20 H4 v-5'/><path d='M4 15 A8 8 0 0 0 18 18'/></svg></button>"
-	"</div></div>"
+	"</div>"
+	/* Remote stop: mirrors the app's red Stop. The phone drops back to
+	 * standby, so this panel swaps to the Start button afterwards. */
+	"<div class='row' style='margin-bottom:0'>"
+	"<button class='primary danger' id='stopbtn'>Stop camera</button></div>"
+	"</div>"
 	"<script>"
 	/* NB: elements are looked up explicitly — a bare `status` would
 	 * resolve to window.status, not the element. */
@@ -118,7 +125,8 @@ static const char control_page[] =
 	"expEl=$('exposure'),evEl=$('ev'),afEl=$('af'),mfEl=$('mf'),lensEl=$('lens'),"
 	"fhintEl=$('fhint'),flashlightEl=$('flashlight'),flipEl=$('flip'),lensselEl=$('lenssel'),"
 	"panelEl=$('panel'),screennoteEl=$('screennote'),"
-	"startpanelEl=$('startpanel'),startbtnEl=$('startbtn');"
+	"startpanelEl=$('startpanel'),startbtnEl=$('startbtn'),"
+	"stopbtnEl=$('stopbtn');"
 	"const COL={live:'#30D158',amber:'#FF9F0A',red:'#FF453A',grey:'#8E8E93'};"
 	"let lastTouch=0;const touch=()=>lastTouch=Date.now();"
 	"const send=o=>{touch();"
@@ -144,6 +152,7 @@ static const char control_page[] =
 	"flipEl.onclick=()=>send({cmd:'flip'});"
 	"lensselEl.onchange=()=>send({cmd:'selectLens',label:lensselEl.value});"
 	"startbtnEl.onclick=()=>send({cmd:'start_stream'});"
+	"stopbtnEl.onclick=()=>send({cmd:'stop_stream'});"
 	"function statusColor(t){t=(t||'').toLowerCase();"
 	/* Standby/starting are amber (ready, not live) — test before the
 	 * generic 'connected' match, which their wording also contains. */
