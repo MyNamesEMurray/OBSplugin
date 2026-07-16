@@ -411,6 +411,11 @@ struct client_state {
 	uint64_t decode_errors;
 	uint64_t audio_packets;
 	uint64_t audio_frames;
+	/* Type-9 lip-sync reference packets this connection. Zero a few
+	 * seconds into a live stream means the app's reference toggle is off
+	 * for this stream — the signal to clear stale calibration output. */
+	uint64_t ref_audio_packets;
+	bool ref_absent_handled; /* the clear ran once this connection */
 	int audio_peak; /* loudest |sample| since the last heartbeat */
 	uint64_t last_diag_ns;   /* last heartbeat emission */
 	uint64_t first_frame_ns; /* 0 until the first decoded frame */
@@ -746,6 +751,49 @@ static void apply_auto_calibrated(struct ios_camera_source *s,
 		     (int)(video_latency_ns / CAL_NS_MS), name,
 		     (int)(offset / CAL_NS_MS), conf);
 	}
+}
+
+/*
+ * The app's "Auto lip-sync reference" toggle can be turned off between
+ * streams, and nothing tells the plugin — its own auto-calibrate settings
+ * stay on, so a previously applied video delay and audio offset would
+ * outlive the calibration that produced them, silently skewing A/V.
+ * Called when a stream has been live for a few seconds with auto-calibrate
+ * enabled but zero reference packets: the reference is off for this
+ * stream, so clear everything calibration applied. (Settings-side disable
+ * is handled separately in update().)
+ */
+static void lipsync_reference_absent(struct ios_camera_source *s)
+{
+	char name[256];
+	pthread_mutex_lock(&s->status_mutex);
+	bool calibrating = s->audio_sync && s->auto_calibrate;
+	int64_t applied = s->applied_audio_offset;
+	snprintf(name, sizeof(name), "%s", s->audio_source);
+	pthread_mutex_unlock(&s->status_mutex);
+	if (!calibrating)
+		return;
+
+	bool cleared = s->sync_offset_owned;
+	set_video_delay(s, 0);
+
+	if (applied != 0 && name[0]) {
+		obs_source_t *audio = obs_get_source_by_name(name);
+		if (audio) {
+			obs_source_set_sync_offset(audio, 0);
+			obs_source_release(audio);
+		}
+		pthread_mutex_lock(&s->status_mutex);
+		s->applied_audio_offset = 0;
+		pthread_mutex_unlock(&s->status_mutex);
+		cleared = true;
+	}
+
+	if (cleared)
+		blog(LOG_INFO,
+		     "[lenslink] auto lip-sync: the app sent no reference "
+		     "this stream (its reference option is off) — cleared "
+		     "the applied video delay and audio offset");
 }
 
 /*
@@ -1224,6 +1272,17 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 	case OBSC_PKT_VIDEO: {
 		c->video_packets++;
 		c->video_bytes += hdr->payload_size;
+
+		/* Reference-absent check: the mic role is fixed for the
+		 * stream's lifetime (the app starts capture with the
+		 * stream), so a few seconds of live video with no type-9
+		 * packet is conclusive, not just early. */
+		if (!c->ref_absent_handled && !c->is_screen &&
+		    c->ref_audio_packets == 0 && c->first_frame_ns &&
+		    os_gettime_ns() - c->first_frame_ns > 5000000000ULL) {
+			c->ref_absent_handled = true;
+			lipsync_reference_absent(s);
+		}
 		bool keyframe = (hdr->flags & OBSC_FLAG_KEYFRAME) != 0;
 		if (keyframe)
 			c->keyframes_seen++;
@@ -1389,6 +1448,7 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		}
 		break;
 	case OBSC_PKT_AUDIO: {
+		c->ref_audio_packets++;
 		pthread_mutex_lock(&s->status_mutex);
 		bool want = s->auto_calibrate;
 		pthread_mutex_unlock(&s->status_mutex);
