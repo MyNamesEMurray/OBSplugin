@@ -112,6 +112,11 @@ blanks the source.
 - **Automatic lip sync.** The plugin measures the camera's latency and can
   automatically line up a separate microphone with the video — no guessing
   at delay values. (See "Lip sync" below.)
+- **Stream health inside OBS.** A live readout in OBS's own status bar —
+  `LensLink: 60 fps · 11.9 Mb/s · 43 ms` beside OBS's stats — plus a
+  dockable **LensLink** panel (View → Docks) with one row per phone.
+  Decoded fps, wire bitrate, and measured capture→decode latency, updated
+  every second.
 - **Smooth on weak Wi-Fi.** If the connection congests, the app lowers
   quality briefly and recovers, instead of piling up latency.
 - **Battery saver.** While streaming, the phone screen dims after a few

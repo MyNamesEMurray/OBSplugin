@@ -69,6 +69,50 @@ if(WIN32)
   target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
 endif()
 
+# --- frontend UI (status bar + dock; optional) -------------------------------
+# Qt6 plus the obs-frontend-api HEADER are enough: the API's five symbols
+# are resolved at runtime from the OBS process (frontend-ui.cpp), so no
+# frontend library is linked and OBS builds without a frontend simply run
+# with the UI off. When Qt6 or the header is missing, the plugin builds
+# exactly as before, without the feature.
+option(ENABLE_FRONTEND_UI "Build the OBS status-bar/dock health UI" ON)
+if(ENABLE_FRONTEND_UI)
+  # Qt's CMake package requires the CXX language before find_package;
+  # probe non-fatally so a C-only toolchain still builds the plugin.
+  include(CheckLanguage)
+  check_language(CXX)
+  if(CMAKE_CXX_COMPILER)
+    enable_language(CXX)
+    find_package(Qt6 QUIET COMPONENTS Core Widgets)
+  endif()
+
+  # The header ships with libobs dev packages (Linux) or lives in the
+  # obs-studio source tree (frontend/api in 31+, UI/obs-frontend-api
+  # before); OBS_FRONTEND_API_HINT lets CI pass those paths explicitly.
+  get_target_property(_obs_includes OBS::libobs INTERFACE_INCLUDE_DIRECTORIES)
+  if(NOT _obs_includes)
+    set(_obs_includes "")
+  endif()
+  find_path(OBS_FRONTEND_API_INCLUDE_DIR obs-frontend-api.h
+            HINTS ${OBS_FRONTEND_API_HINT} ${_obs_includes}
+                  ${LIBOBS_INCLUDE_DIR})
+
+  if(Qt6_FOUND AND OBS_FRONTEND_API_INCLUDE_DIR)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+      CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    target_sources(${PROJECT_NAME} PRIVATE src/frontend-ui.cpp src/health.h)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE LENSLINK_FRONTEND)
+    target_include_directories(${PROJECT_NAME} PRIVATE
+      ${OBS_FRONTEND_API_INCLUDE_DIR})
+    target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets
+      ${CMAKE_DL_LIBS})
+    message(STATUS "lenslink: frontend UI enabled")
+  else()
+    message(STATUS "lenslink: frontend UI disabled "
+                   "(Qt6 or obs-frontend-api.h not found)")
+  endif()
+endif()
+
 set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "")
 
 # --- install ---------------------------------------------------------------
