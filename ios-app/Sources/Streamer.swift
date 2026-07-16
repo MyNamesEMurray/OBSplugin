@@ -277,6 +277,26 @@ final class Streamer: ObservableObject {
     /// the Settings toggle so the OBS dropdown's silence is explained.
     @Published private(set) var discoverable: Bool?
 
+    private let localNetworkPrompt = LocalNetworkPrompt()
+    private var localNetworkPrompted = false
+
+    /// The advertise was denied. Advertising never presents the Local
+    /// Network dialog (or creates the Settings toggle) by itself — run
+    /// the one-shot browse that does, once per launch. If the user
+    /// grants, bounce the idle listener so it comes back advertising; a
+    /// live stream keeps its connection and advertises from next start.
+    private func promptForLocalNetwork() {
+        guard !localNetworkPrompted else { return }
+        localNetworkPrompted = true
+        localNetworkPrompt.trigger { [weak self] granted in
+            Task { @MainActor [weak self] in
+                guard let self, granted, !self.isStreaming else { return }
+                self.stopStandby()
+                self.updateStandby()
+            }
+        }
+    }
+
     // Live camera controls (also driven remotely via CONTROL packets)
     @Published var zoom: CGFloat = 1 {
         didSet {
@@ -568,7 +588,11 @@ final class Streamer: ObservableObject {
         }
         client.onDiscoveryChange = { [weak self] discoverable in
             Task { @MainActor [weak self] in
-                self?.discoverable = discoverable
+                guard let self else { return }
+                self.discoverable = discoverable
+                if discoverable == false {
+                    self.promptForLocalNetwork()
+                }
             }
         }
         client.onControl = { [weak self] json in

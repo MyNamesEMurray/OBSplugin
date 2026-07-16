@@ -44,6 +44,12 @@ targets:
         NSLocalNetworkUsageDescription: >-
           LensLink connects to OBS Studio on your local network to send the
           camera feed.
+        # Required for the NWBrowser that triggers the Local Network
+        # permission dialog (browsing needs the service types declared;
+        # advertising alone can be denied without iOS ever showing the
+        # prompt or creating the Settings toggle).
+        NSBonjourServices:
+          - _lenslink._tcp
         NSMicrophoneUsageDescription: >-
           LensLink can send your microphone to OBS — as the camera's audio
           if you enable it, or purely as a timing reference to
