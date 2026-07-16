@@ -2079,12 +2079,52 @@ static const char *lenslink_screen_get_name(void *unused)
 	return T_("ScreenSource");
 }
 
+/*
+ * The Phone field is an editable combo, and OBS editable combos save the
+ * DISPLAYED text, not the list item's value — picking a discovered phone
+ * stores its whole "Name (192.168.1.23)" label as the host. Extract the
+ * address from a trailing "(...)" when it looks like one; hand-typed IPs
+ * and hostnames pass through untouched.
+ */
+static void extract_dial_host(const char *setting, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s", setting);
+
+	size_t len = strlen(out);
+	if (len < 3 || out[len - 1] != ')')
+		return;
+	char *open = strrchr(out, '(');
+	if (!open || open == out)
+		return;
+
+	/* Address-ish check: IPv4/IPv6/hostname chars only. A phone name
+	 * that itself ends in parentheses shouldn't get mangled. */
+	bool addr = true;
+	for (const char *p = open + 1; p < out + len - 1; p++) {
+		char c = *p;
+		if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'z') &&
+		    !(c >= 'A' && c <= 'Z') && c != '.' && c != ':' &&
+		    c != '-' && c != '%') {
+			addr = false;
+			break;
+		}
+	}
+	if (!addr || open + 1 == out + len - 1)
+		return;
+
+	size_t n = (size_t)(out + len - 1 - (open + 1));
+	memmove(out, open + 1, n);
+	out[n] = 0;
+}
+
 static void ios_camera_update(void *data, obs_data_t *settings)
 {
 	struct ios_camera_source *s = data;
 	enum connection_mode mode =
 		parse_mode(obs_data_get_string(settings, S_MODE));
-	const char *host = obs_data_get_string(settings, S_HOST);
+	char host[128];
+	extract_dial_host(obs_data_get_string(settings, S_HOST), host,
+			  sizeof(host));
 
 	/* Unbuffered async video: render the newest frame immediately
 	 * instead of letting OBS smooth timestamps with a frame queue. */
@@ -2210,8 +2250,8 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	s->lipsync = lipsync_create();
 
 	s->conn_mode = parse_mode(obs_data_get_string(settings, S_MODE));
-	snprintf(s->host, sizeof(s->host), "%s",
-		 obs_data_get_string(settings, S_HOST));
+	extract_dial_host(obs_data_get_string(settings, S_HOST), s->host,
+			  sizeof(s->host));
 	snprintf(s->usb_device, sizeof(s->usb_device), "%s",
 		 obs_data_get_string(settings, S_USB_DEVICE));
 	obs_source_set_async_unbuffered(
@@ -2431,7 +2471,11 @@ static obs_properties_t *build_properties(struct ios_camera_source *s,
 		char label[144];
 		snprintf(label, sizeof(label), "%.63s (%.63s)", phones[i].name,
 			 phones[i].host);
-		obs_property_list_add_string(host, label, phones[i].host);
+		/* name == value on purpose: OBS editable combos save the
+		 * displayed text, so the stored setting IS the label —
+		 * extract_dial_host() digs the address back out when
+		 * dialing. Distinct values would just desync the two. */
+		obs_property_list_add_string(host, label, label);
 	}
 
 	obs_property_t *usb_dev = obs_properties_add_list(
