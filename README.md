@@ -57,6 +57,10 @@ phone.
    - **Wi-Fi** — open the **Phone** dropdown and pick your phone (it's
      found automatically by name while the app is open), or enter the IP
      the app shows. (Phone and computer must be on the same network.)
+     If the phone doesn't appear by name, check that **Settings → Privacy
+     & Security → Local Network → LensLink** is on — iOS needs it for the
+     name broadcast, and sideloaded builds sometimes need the toggle
+     flipped off and on once. Typing the IP works regardless.
    - **USB** — connect the cable, set **Connection → USB cable**. No
      network needed, and the phone charges while streaming.
 

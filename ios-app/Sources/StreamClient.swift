@@ -157,7 +157,7 @@ final class StreamClient {
         send(OBSCProtocol.packet(type: .diag, payload: payload))
     }
 
-    private func listen(on port: UInt16) {
+    private func listen(on port: UInt16, advertise: Bool = true) {
         guard let nwPort = NWEndpoint.Port(rawValue: port),
               let listener = try? NWListener(using: Self.tcpParameters(), on: nwPort) else {
             listenerStateDescription = "init failed"
@@ -168,8 +168,10 @@ final class StreamClient {
         // Advertise over Bonjour so the OBS plugin can discover this
         // phone by name instead of a typed IP. The device name matches
         // the HELLO; port comes from the service record's socket.
-        listener.service = NWListener.Service(
-            name: UIDevice.current.name, type: "_lenslink._tcp")
+        if advertise {
+            listener.service = NWListener.Service(
+                name: UIDevice.current.name, type: "_lenslink._tcp")
+        }
 
         self.listener = listener
         state = .connecting
@@ -192,6 +194,20 @@ final class StreamClient {
             guard let self, let listener, self.listener === listener else { return }
             self.listenerStateDescription = "\(newState)"
             if case .failed(let error) = newState {
+                // Bonjour advertising is denied when Local Network
+                // permission is off (Settings → Privacy → Local Network;
+                // sideloaded builds sometimes need the toggle flipped once)
+                // — DNSServiceErr NoAuth, surfaced as a .dns NWError. The
+                // advertisement is a convenience; the listener is the
+                // product. Retry without it so typed-IP Wi-Fi and USB
+                // connects keep working, minus name discovery in OBS.
+                if advertise, case .dns = error {
+                    print("Bonjour advertise failed (\(error)) — "
+                          + "listening without discovery")
+                    self.teardownListener()
+                    self.listen(on: port, advertise: false)
+                    return
+                }
                 self.state = .failed(error.localizedDescription)
                 self.teardownListener()
                 self.teardownConnection()
