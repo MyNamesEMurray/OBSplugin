@@ -592,7 +592,13 @@ final class StreamClient {
 
     func sendVideoFrame(_ frame: VideoEncoder.EncodedFrame) {
         queue.async { [weak self] in
-            guard let self, self.connection != nil else { return }
+            // authOK here, BEFORE the in-flight bookkeeping: the deeper
+            // send guard drops unauthenticated frames after the counter
+            // was already incremented, and the never-sent frame has no
+            // completion to decrement it. Streaming while a pairing was
+            // pending pinned inFlightFrames at the cap, so video stayed
+            // dark after auth succeeded until the stream was restarted.
+            guard let self, self.connection != nil, self.authOK() else { return }
             // The cap applies to keyframes too. Exempting them looks
             // harmless but is an unbounded-memory bug: every drop requests
             // a keyframe, so during a long stall the exempt keyframes

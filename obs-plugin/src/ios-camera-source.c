@@ -175,6 +175,11 @@ struct ios_camera_source {
 	 * status_mutex (written by update(), read by the dial thread). */
 	char auth_token[80];
 	char pair_pin[24];
+	/* The live connection asked for a PIN (pair_request sent, or auth
+	 * was denied). Drives the properties sheet: the PIN field and its
+	 * submit button exist only while a phone is actually asking.
+	 * Guarded by status_mutex. */
+	bool pair_required;
 
 	pthread_mutex_t status_mutex;
 	struct dstr status;
@@ -1140,10 +1145,16 @@ static void dump_open(struct client_state *c)
 	dstr_free(&path);
 }
 
+static void set_pair_required(struct ios_camera_source *s, bool required);
+
 static void client_disconnect(struct ios_camera_source *s,
 			      struct client_state *c)
 {
 	dump_close(c);
+	/* A pairing attempt dies with its connection (matches the app,
+	 * which drops its PIN on disconnect) — don't leave a PIN field
+	 * pointing at a phone that's gone. */
+	set_pair_required(s, false);
 	if (c->sock != OBSC_INVALID_SOCKET) {
 		net_close(c->sock);
 		c->sock = OBSC_INVALID_SOCKET;
@@ -1247,6 +1258,19 @@ static void hello_ready(struct ios_camera_source *s, struct client_state *c)
 	}
 }
 
+/* Mirrors "the phone is asking for a PIN" and refreshes the properties
+ * sheet so the PIN field/button appear and disappear with the need. Safe
+ * from any thread (obs_source_update_properties just signals the UI). */
+static void set_pair_required(struct ios_camera_source *s, bool required)
+{
+	pthread_mutex_lock(&s->status_mutex);
+	bool changed = s->pair_required != required;
+	s->pair_required = required;
+	pthread_mutex_unlock(&s->status_mutex);
+	if (changed)
+		obs_source_update_properties(s->source);
+}
+
 /* The app requires pairing: authenticate with the stored token, else try
  * the user-entered PIN, else ask the app to show a PIN and tell the user
  * where to type it. Resolution arrives as a STATE with auth:"ok"/"denied". */
@@ -1270,6 +1294,7 @@ static void send_auth(struct ios_camera_source *s, struct client_state *c)
 	} else {
 		send_control_cmd(c, "{\"cmd\":\"pair_request\"}");
 		set_status(s, "%s", T_("Status.PairRequired"));
+		set_pair_required(s, true);
 	}
 }
 
@@ -1288,6 +1313,8 @@ static void save_pairing_token(struct ios_camera_source *s,
 	obs_data_set_string(settings, S_PAIR_PIN, "");
 	obs_source_update(s->source, settings);
 	obs_data_release(settings);
+	/* The Forget button just became meaningful; refresh the sheet. */
+	obs_source_update_properties(s->source);
 }
 
 /* Logs the H.264 stream's SPS profile/level once per decode stream — the
@@ -1624,9 +1651,13 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 				blog(LOG_INFO,
 				     "[lenslink] phone accepted "
 				     "authentication");
+				set_pair_required(s, false);
 				hello_ready(s, c);
 			} else if (strcmp(auth, "denied") == 0) {
 				set_status(s, "%s", T_("Status.AuthDenied"));
+				/* Wrong/expired PIN or revoked token: the
+				 * field stays up for another attempt. */
+				set_pair_required(s, true);
 			}
 			break;
 		}
@@ -2515,6 +2546,37 @@ static bool stop_camera_clicked(obs_properties_t *props,
 	return false;
 }
 
+/* Explicit pairing handshake: send whatever PIN is currently in the
+ * field over the live connection. update() already sends a *changed*
+ * PIN automatically; the button covers retries (denied → same PIN) and
+ * gives the exchange a visible affordance. */
+static bool submit_pin_clicked(obs_properties_t *props,
+			       obs_property_t *property, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	struct ios_camera_source *s = data;
+
+	if (!s)
+		return false;
+	obs_data_t *settings = obs_source_get_settings(s->source);
+	char pin[24];
+	sanitize_pin(pin, sizeof(pin),
+		     obs_data_get_string(settings, S_PAIR_PIN));
+	obs_data_release(settings);
+	if (!pin[0])
+		return false;
+
+	pthread_mutex_lock(&s->status_mutex);
+	snprintf(s->pair_pin, sizeof(s->pair_pin), "%s", pin);
+	pthread_mutex_unlock(&s->status_mutex);
+
+	char json[64];
+	snprintf(json, sizeof(json), "{\"cmd\":\"pair\",\"pin\":\"%s\"}", pin);
+	ios_camera_enqueue_control(s, json, strlen(json));
+	return false;
+}
+
 /* Drops the stored pairing token (and any pending PIN); the phone side
  * has its own "Forget paired computers" for the other half. */
 static bool forget_pairing_clicked(obs_properties_t *props,
@@ -2531,7 +2593,8 @@ static bool forget_pairing_clicked(obs_properties_t *props,
 	obs_data_set_string(settings, S_PAIR_PIN, "");
 	obs_source_update(s->source, settings);
 	obs_data_release(settings);
-	return false;
+	/* true = rebuild the sheet: this button hides itself. */
+	return true;
 }
 
 /* Property sheets for the two source types share the connection and decode
@@ -2594,13 +2657,28 @@ static obs_properties_t *build_properties(struct ios_camera_source *s,
 					  T_("StopCamera"),
 					  stop_camera_clicked);
 
-		/* Pairing (only meaningful when the app has "Require
-		 * pairing" on — the status line says when to use these). */
-		obs_properties_add_text(props, S_PAIR_PIN, T_("PairPin"),
-					OBS_TEXT_DEFAULT);
-		obs_properties_add_button(props, "forget_pairing",
-					  T_("ForgetPairing"),
-					  forget_pairing_clicked);
+		/* Pairing: the PIN field + submit button exist only while
+		 * the connected phone is actually asking for a PIN (the
+		 * pair_required mirror refreshes this sheet on changes),
+		 * and Forget only while a pairing is stored. */
+		bool pair_required = false, have_token = false;
+		if (s) {
+			pthread_mutex_lock(&s->status_mutex);
+			pair_required = s->pair_required;
+			have_token = s->auth_token[0] != 0;
+			pthread_mutex_unlock(&s->status_mutex);
+		}
+		obs_property_t *pin_text = obs_properties_add_text(
+			props, S_PAIR_PIN, T_("PairPin"), OBS_TEXT_DEFAULT);
+		obs_property_t *pin_btn = obs_properties_add_button(
+			props, "submit_pin", T_("SubmitPin"),
+			submit_pin_clicked);
+		obs_property_t *forget = obs_properties_add_button(
+			props, "forget_pairing", T_("ForgetPairing"),
+			forget_pairing_clicked);
+		obs_property_set_visible(pin_text, pair_required);
+		obs_property_set_visible(pin_btn, pair_required);
+		obs_property_set_visible(forget, have_token);
 
 		obs_property_t *audio_list = obs_properties_add_list(
 			props, S_AUDIO_SOURCE, T_("AudioSource"),
