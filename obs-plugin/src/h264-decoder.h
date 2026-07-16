@@ -10,14 +10,28 @@ struct h264_decoder;
 
 /*
  * codec_id: AV_CODEC_ID_H264 or AV_CODEC_ID_HEVC.
- * allow_hw: try GPU decoding (D3D11VA/VideoToolbox/VAAPI), silently
- * falling back to software when unavailable.
+ * allow_hw: try GPU decoding (D3D11VA/DXVA2/VideoToolbox/VAAPI/VDPAU),
+ * silently falling back to software when unavailable.
+ * hw_start: index into the platform's hardware-API priority list to start
+ * from (0 = best). A caller that watched hardware API N fail on the live
+ * stream recreates with hw_start = N + 1 to try the next one — a decoder
+ * that *initializes* is no proof it can decode this stream (a driver can
+ * accept the codec yet reject the stream, erroring or emitting nothing).
+ * Past the end of the list, the decoder is software.
  */
 struct h264_decoder *h264_decoder_create(enum AVCodecID codec_id,
-					 bool allow_hw);
+					 bool allow_hw, int hw_start);
 
 /* Whether this instance actually decodes on the GPU. */
 bool h264_decoder_is_hw(const struct h264_decoder *dec);
+
+/* Which hardware-API priority slot this instance uses (-1 = software);
+ * feed slot + 1 back into h264_decoder_create's hw_start to advance. */
+int h264_decoder_hw_index(const struct h264_decoder *dec);
+
+/* Human-readable name of the hardware API in use ("d3d11va", …), or
+ * "software". */
+const char *h264_decoder_hw_name(const struct h264_decoder *dec);
 void h264_decoder_destroy(struct h264_decoder *dec);
 
 /*

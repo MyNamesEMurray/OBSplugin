@@ -18,6 +18,7 @@ struct h264_decoder {
 	AVBufferRef *hw_device;
 	enum AVPixelFormat hw_pix_fmt;
 	bool is_hw;
+	int hw_index; /* slot in hw_priority, -1 = software */
 
 	/* Diagnostics. */
 	uint64_t frames_output;
@@ -59,9 +60,12 @@ static enum AVPixelFormat get_hw_format(AVCodecContext *ctx,
 	return formats[0];
 }
 
-static bool try_init_hw(struct h264_decoder *dec, const AVCodec *codec)
+static bool try_init_hw(struct h264_decoder *dec, const AVCodec *codec,
+			int hw_start)
 {
-	for (int i = 0; hw_priority[i] != AV_HWDEVICE_TYPE_NONE; i++) {
+	if (hw_start < 0)
+		hw_start = 0;
+	for (int i = hw_start; hw_priority[i] != AV_HWDEVICE_TYPE_NONE; i++) {
 		enum AVHWDeviceType type = hw_priority[i];
 
 		enum AVPixelFormat pix = AV_PIX_FMT_NONE;
@@ -87,6 +91,7 @@ static bool try_init_hw(struct h264_decoder *dec, const AVCodec *codec)
 		dec->hw_device = device;
 		dec->hw_pix_fmt = pix;
 		dec->is_hw = true;
+		dec->hw_index = i;
 		dec->ctx->hw_device_ctx = av_buffer_ref(device);
 		dec->ctx->opaque = dec;
 		dec->ctx->get_format = get_hw_format;
@@ -99,7 +104,8 @@ static bool try_init_hw(struct h264_decoder *dec, const AVCodec *codec)
 	return false;
 }
 
-struct h264_decoder *h264_decoder_create(enum AVCodecID codec_id, bool allow_hw)
+struct h264_decoder *h264_decoder_create(enum AVCodecID codec_id,
+					 bool allow_hw, int hw_start)
 {
 	const AVCodec *codec = avcodec_find_decoder(codec_id);
 	if (!codec) {
@@ -109,6 +115,7 @@ struct h264_decoder *h264_decoder_create(enum AVCodecID codec_id, bool allow_hw)
 	}
 
 	struct h264_decoder *dec = bzalloc(sizeof(*dec));
+	dec->hw_index = -1;
 
 	dec->ctx = avcodec_alloc_context3(codec);
 	dec->pkt = av_packet_alloc();
@@ -124,10 +131,11 @@ struct h264_decoder *h264_decoder_create(enum AVCodecID codec_id, bool allow_hw)
 	 * encoder sends single-slice frames, so decode single-threaded. */
 	dec->ctx->thread_count = 1;
 
-	if (allow_hw && !try_init_hw(dec, codec))
+	if (allow_hw && !try_init_hw(dec, codec, hw_start))
 		blog(LOG_INFO,
-		     "[lenslink] no hardware decoder available, "
-		     "using software");
+		     "[lenslink] no %shardware decoder available, "
+		     "using software",
+		     hw_start > 0 ? "further " : "");
 
 	if (avcodec_open2(dec->ctx, codec, NULL) < 0) {
 		blog(LOG_ERROR, "[lenslink] failed to open decoder");
@@ -144,6 +152,20 @@ fail:
 bool h264_decoder_is_hw(const struct h264_decoder *dec)
 {
 	return dec && dec->is_hw;
+}
+
+int h264_decoder_hw_index(const struct h264_decoder *dec)
+{
+	return (dec && dec->is_hw) ? dec->hw_index : -1;
+}
+
+const char *h264_decoder_hw_name(const struct h264_decoder *dec)
+{
+	if (!dec || !dec->is_hw)
+		return "software";
+	const char *name =
+		av_hwdevice_get_type_name(hw_priority[dec->hw_index]);
+	return name ? name : "hardware";
 }
 
 uint64_t h264_decoder_frames_output(const struct h264_decoder *dec)
@@ -243,7 +265,11 @@ bool h264_decoder_decode(struct h264_decoder *dec, obs_source_t *source,
 	int ret = avcodec_send_packet(dec->ctx, dec->pkt);
 	bool resend = ret == AVERROR(EAGAIN); /* drain below, then retry */
 	if (ret < 0 && !resend) {
-		blog(LOG_WARNING, "[lenslink] avcodec_send_packet: %d", ret);
+		/* Name the API and the exact error: "which hardware decoder
+		 * rejects which stream and why" is the whole diagnosis when
+		 * a driver dislikes a stream (e.g. D3D11VA vs our H.264). */
+		blog(LOG_WARNING, "[lenslink] avcodec_send_packet (%s): %s",
+		     h264_decoder_hw_name(dec), av_err2str(ret));
 		return ret != AVERROR_INVALIDDATA ? false : true;
 	}
 
@@ -253,7 +279,8 @@ bool h264_decoder_decode(struct h264_decoder *dec, obs_source_t *source,
 			break;
 		if (ret < 0) {
 			blog(LOG_WARNING,
-			     "[lenslink] avcodec_receive_frame: %d", ret);
+			     "[lenslink] avcodec_receive_frame (%s): %s",
+			     h264_decoder_hw_name(dec), av_err2str(ret));
 			return false;
 		}
 
