@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "net-compat.h"
 #include "protocol.h"
@@ -38,6 +39,7 @@
 #define S_AUTO_VIDEO_DELAY "audio_auto_video_delay"
 #define S_WEB_CONTROL "web_control"
 #define S_DIAGNOSTICS "diagnostics"
+#define S_DUMP_STREAM "dump_stream"
 #define S_DEACTIVATE_HIDDEN "deactivate_when_hidden"
 #define S_AUTO_START "auto_start"
 
@@ -73,6 +75,7 @@ struct ios_camera_source {
 	char usb_device[64]; /* pinned UDID for USB mode; "" = auto-assign */
 	volatile bool hw_decode;
 	volatile bool diagnostics; /* verbose pipeline logging to the OBS log */
+	volatile bool dump_stream; /* write received video to a file on disk */
 
 	/* "Deactivate when hidden": when enabled and the source isn't shown
 	 * on any display (program, preview, or projector), the dial loop
@@ -408,7 +411,15 @@ struct client_state {
 	uint64_t last_diag_ns;   /* last heartbeat emission */
 	uint64_t first_frame_ns; /* 0 until the first decoded frame */
 	bool no_output_warned;   /* one-shot "keyframe but nothing decoded" */
+	bool sps_logged;         /* one-shot SPS profile/level log */
 	bool wrong_kind; /* stream kind doesn't match this source type */
+
+	/* Stream-dump diagnostic: the received Annex B bytes, written
+	 * verbatim so the exact live stream can be replayed through the
+	 * ffmpeg CLI when hardware decode misbehaves. Starts at a keyframe
+	 * (so the file joins clean, like the decoder does). */
+	FILE *dump_file;
+	bool dump_tried; /* fopen failed once — don't retry per packet */
 };
 
 static void send_buf_free(struct send_buf *b)
@@ -906,9 +917,50 @@ static void diag_tick(struct ios_camera_source *s, struct client_state *c)
 	c->audio_peak = 0;
 }
 
+static void dump_close(struct client_state *c)
+{
+	if (c->dump_file) {
+		fclose(c->dump_file);
+		c->dump_file = NULL;
+		blog(LOG_INFO, "[lenslink] stream dump closed");
+	}
+	c->dump_tried = false;
+}
+
+/* Opens the stream-dump file in the plugin's config directory. Named with
+ * the wall-clock time so successive dumps never overwrite each other, and
+ * with the codec's conventional extension so `ffmpeg -i` autodetects it. */
+static void dump_open(struct client_state *c)
+{
+	c->dump_tried = true;
+
+	char *dir = obs_module_config_path(NULL);
+	if (!dir)
+		return;
+	os_mkdirs(dir);
+
+	struct dstr path = {0};
+	dstr_printf(&path, "%s/lenslink-dump-%lld.%s", dir,
+		    (long long)time(NULL),
+		    c->codec_id == AV_CODEC_ID_HEVC ? "hevc" : "h264");
+	bfree(dir);
+
+	c->dump_file = os_fopen(path.array, "wb");
+	if (c->dump_file)
+		blog(LOG_INFO,
+		     "[lenslink] dumping received %s stream to %s",
+		     c->codec_id == AV_CODEC_ID_HEVC ? "HEVC" : "H.264",
+		     path.array);
+	else
+		blog(LOG_WARNING, "[lenslink] stream dump: cannot open %s",
+		     path.array);
+	dstr_free(&path);
+}
+
 static void client_disconnect(struct ios_camera_source *s,
 			      struct client_state *c)
 {
+	dump_close(c);
 	if (c->sock != OBSC_INVALID_SOCKET) {
 		net_close(c->sock);
 		c->sock = OBSC_INVALID_SOCKET;
@@ -984,6 +1036,33 @@ static bool extract_json_bool(const char *json, const char *key)
 	while (*p == ' ' || *p == '\t')
 		p++;
 	return strncmp(p, "true", 4) == 0;
+}
+
+/* Logs the H.264 stream's SPS profile/level once per decode stream — the
+ * first thing to know when a GPU driver won't decode a stream software
+ * handles fine (drivers gate on the advertised caps, not the content). */
+static void log_h264_sps(const uint8_t *data, size_t size)
+{
+	for (size_t i = 0; i + 4 < size; i++) {
+		if (data[i] != 0 || data[i + 1] != 0)
+			continue;
+		size_t nal;
+		if (data[i + 2] == 1)
+			nal = i + 3;
+		else if (data[i + 2] == 0 && data[i + 3] == 1)
+			nal = i + 4;
+		else
+			continue;
+		if (nal + 3 >= size)
+			return;
+		if ((data[nal] & 0x1F) != 7) /* SPS */
+			continue;
+		blog(LOG_INFO,
+		     "[lenslink] H.264 SPS: profile_idc=%u "
+		     "constraint_flags=0x%02x level_idc=%u",
+		     data[nal + 1], data[nal + 2], data[nal + 3]);
+		return;
+	}
 }
 
 static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
@@ -1107,9 +1186,13 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			c->decode_errors = 0;
 			c->first_frame_ns = 0;
 			c->no_output_warned = false;
+			c->sps_logged = false;
 			c->hw_retry = 0;
 			c->packets_at_decoder = c->video_packets;
 			c->next_decoder_attempt = 0;
+			/* A dump file holds ONE codec (its extension says
+			 * which); the new codec opens a fresh file. */
+			dump_close(c);
 			/* Diagnostics measure per decode-stream from here. */
 			c->connected_ns = os_gettime_ns();
 		}
@@ -1121,6 +1204,29 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		bool keyframe = (hdr->flags & OBSC_FLAG_KEYFRAME) != 0;
 		if (keyframe)
 			c->keyframes_seen++;
+
+		if (keyframe && !c->sps_logged &&
+		    c->codec_id == AV_CODEC_ID_H264) {
+			c->sps_logged = true;
+			log_h264_sps(payload, hdr->payload_size);
+		}
+
+		if (s->dump_stream) {
+			if (!c->dump_file && !c->dump_tried && keyframe)
+				dump_open(c);
+			if (c->dump_file &&
+			    fwrite(payload, 1, hdr->payload_size,
+				   c->dump_file) != hdr->payload_size) {
+				blog(LOG_WARNING,
+				     "[lenslink] stream dump: write failed "
+				     "(disk full?), stopping the dump");
+				dump_close(c);
+				c->dump_tried = true;
+			}
+		} else if (c->dump_file) {
+			/* Toggled off mid-stream: finish the file cleanly. */
+			dump_close(c);
+		}
 
 		if (!c->decoder) {
 			/* Join on a keyframe so the decoder starts clean. */
@@ -1795,6 +1901,7 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 		s->source, obs_data_get_bool(settings, S_LOW_LATENCY));
 	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
 	s->diagnostics = obs_data_get_bool(settings, S_DIAGNOSTICS);
+	s->dump_stream = obs_data_get_bool(settings, S_DUMP_STREAM);
 	s->deactivate_hidden =
 		obs_data_get_bool(settings, S_DEACTIVATE_HIDDEN);
 	s->auto_start = !s->is_screen_source &&
@@ -1901,6 +2008,7 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 		source, obs_data_get_bool(settings, S_LOW_LATENCY));
 	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
 	s->diagnostics = obs_data_get_bool(settings, S_DIAGNOSTICS);
+	s->dump_stream = obs_data_get_bool(settings, S_DUMP_STREAM);
 	s->deactivate_hidden =
 		obs_data_get_bool(settings, S_DEACTIVATE_HIDDEN);
 	s->auto_start = !s->is_screen_source &&
@@ -1974,6 +2082,7 @@ static void ios_camera_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, S_AUTO_VIDEO_DELAY, false);
 	obs_data_set_default_bool(settings, S_WEB_CONTROL, true);
 	obs_data_set_default_bool(settings, S_DIAGNOSTICS, true);
+	obs_data_set_default_bool(settings, S_DUMP_STREAM, false);
 	obs_data_set_default_bool(settings, S_DEACTIVATE_HIDDEN, false);
 	obs_data_set_default_bool(settings, S_AUTO_START, true);
 }
@@ -2127,6 +2236,10 @@ static obs_properties_t *build_properties(struct ios_camera_source *s,
 	obs_property_t *diag =
 		obs_properties_add_bool(props, S_DIAGNOSTICS, T_("Diagnostics"));
 	obs_property_set_long_description(diag, T_("Diagnostics.Desc"));
+
+	obs_property_t *dump = obs_properties_add_bool(props, S_DUMP_STREAM,
+						       T_("DumpStream"));
+	obs_property_set_long_description(dump, T_("DumpStream.Desc"));
 
 	obs_property_t *status = obs_properties_add_text(
 		props, "status_info", T_("Status"), OBS_TEXT_INFO);
