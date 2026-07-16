@@ -120,11 +120,12 @@ option):
   the stream as soon as the open, idle app becomes reachable. Open the
   app — by hand, with Siri, or from a Shortcuts automation — and the
   video just appears in OBS.
-- **A button in OBS.** The source's properties have **Start camera on the
-  phone**, and the browser panel (`http://localhost:9980`) shows a
-  **Start camera** button whenever the app is connected but idle.
-  (Scriptable, too: `POST http://localhost:9980/api/control` with body
-  `{"cmd":"start_stream"}`.)
+- **Buttons in OBS.** The source's properties have **Start camera on the
+  phone** and **Stop camera on the phone**, and the browser panel
+  (`http://localhost:9980`) shows a **Start camera** button whenever the
+  app is connected but idle, and a red **Stop camera** button while it's
+  live. (Scriptable, too: `POST http://localhost:9980/api/control` with
+  body `{"cmd":"start_stream"}` or `{"cmd":"stop_stream"}`.)
 - **Siri / Shortcuts.** *"Hey Siri, start streaming with LensLink"* opens
   the app and starts the camera (iOS 16+). The **Start/Stop Camera
   Stream** actions are available in the Shortcuts app for automations; on

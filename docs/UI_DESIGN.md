@@ -57,7 +57,9 @@ colours so it also looks native on the phone.
 Standby is the remote-start state: the app is idle but OBS is connected
 and can start the camera. It shares the amber of Connecting — both mean
 "linked, not yet live". On the web panel the standby state replaces the
-(dead) camera controls with a single accent **Start camera** button.
+(dead) camera controls with a single accent **Start camera** button;
+while live, the panel ends in a red **Stop camera** button (Stop stays
+the one destructive control, mirroring the app's red Stop chip).
 
 The status **word and colour are defined once** (`Streamer.Status.displayName`
 / `.tint` in the app) and reused by every view; the web panel maps the

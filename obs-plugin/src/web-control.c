@@ -59,6 +59,8 @@ static const char control_page[] =
 	".primary{width:100%;height:44px;border:0;border-radius:12px;"
 	"background:var(--accent);color:#fff;font-size:15px;font-weight:600;"
 	"cursor:pointer}"
+	/* Stop is the one destructive control (docs/UI_DESIGN.md §1). */
+	".primary.danger{background:var(--red)}"
 	".lbl{font-size:13px;color:var(--txt2);width:48px;flex:none}"
 	"</style></head><body>"
 	"<header><h1>LensLink</h1>"
@@ -139,7 +141,12 @@ static const char control_page[] =
 	"<select id='fmtres' title='Resolution'></select>"
 	"<select id='fmtfps' title='Frame rate'></select>"
 	"<select id='fmtcodec' title='Codec'></select>"
-	"</div></div>"
+	"</div>"
+	/* Remote stop: mirrors the app's red Stop. The phone drops back to
+	 * standby, so this panel swaps to the Start button afterwards. */
+	"<div class='row' style='margin-bottom:0'>"
+	"<button class='primary danger' id='stopbtn'>Stop camera</button></div>"
+	"</div>"
 	"<script>"
 	/* NB: elements are looked up explicitly — a bare `status` would
 	 * resolve to window.status, not the element. */
@@ -150,7 +157,7 @@ static const char control_page[] =
 	"panelEl=$('panel'),screennoteEl=$('screennote'),"
 	"startpanelEl=$('startpanel'),startbtnEl=$('startbtn'),"
 	"fmtrowEl=$('fmtrow'),fmtresEl=$('fmtres'),fmtfpsEl=$('fmtfps'),"
-	"fmtcodecEl=$('fmtcodec'),"
+	"fmtcodecEl=$('fmtcodec'),stopbtnEl=$('stopbtn'),"
 	"emoderowEl=$('emoderow'),aeEl=$('ae'),meEl=$('me'),biasrowEl=$('biasrow'),"
 	"isorowEl=$('isorow'),isoEl=$('iso'),isovEl=$('isov'),"
 	"shutrowEl=$('shutrow'),shutEl=$('shut'),shutvEl=$('shutv'),"
@@ -181,6 +188,7 @@ static const char control_page[] =
 	"flipEl.onclick=()=>send({cmd:'flip'});"
 	"lensselEl.onchange=()=>send({cmd:'selectLens',label:lensselEl.value});"
 	"startbtnEl.onclick=()=>send({cmd:'start_stream'});"
+	"stopbtnEl.onclick=()=>send({cmd:'stop_stream'});"
 	/* Rebuild a select only when its option list changes (same pattern as
 	 * the lens picker); values stay raw, labels get a formatter. */
 	"function fillSel(el,opts,val,fmt){const want=opts.join('|');"
