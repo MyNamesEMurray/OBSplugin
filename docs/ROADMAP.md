@@ -112,14 +112,7 @@ the capability list (which combos the camera supports) included in the
 STATE snapshot so OBS/web-panel pickers only offer what works. *Low
 effort on the app side; property-UI work on the plugin side.*
 
-### 6. In-app stream health overlay
-The diagnostics are rich but live in the OBS log. A small optional
-overlay on the Live screen (bitrate, fps, dropped frames, adaptive
-bitrate state, link RTT — all already counted in `StreamClient`) would
-let the person at the phone see why a stream looks bad without walking
-to the computer. *Low effort, pure surfacing of existing counters.*
-
-### 7. Orientation metadata
+### 6. Orientation metadata
 A rotated phone streams sideways video today; streamers work around it
 with OBS transforms. Capturing device orientation and either rotating
 the buffer at the encoder or signaling it in VIDEO_CONFIG (plugin

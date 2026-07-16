@@ -228,6 +228,21 @@ final class Streamer: ObservableObject {
     @Published private(set) var isStreaming = false
     @Published var cameraPermissionDenied = false
 
+    /// Per-second stream health for the Live screen's optional overlay.
+    /// Sampled by the adaptive-bitrate loop (already 1 Hz), so the overlay
+    /// costs nothing beyond what's measured anyway.
+    struct StreamHealth: Equatable {
+        var fps = 0
+        var megabitsPerSecond = 0.0
+        var droppedFrames = 0
+    }
+
+    @Published private(set) var health: StreamHealth?
+    /// Counters are cumulative across connections; baseline them at each
+    /// stream start so the overlay shows this stream's drops, not the
+    /// app-lifetime total.
+    private var healthDroppedBaseline = 0
+
     /// Keeps resolution/fps within what the selected lens supports.
     func clampCaptureSettings() {
         let supported = { (r: CameraManager.Resolution, f: Int) in
@@ -502,6 +517,7 @@ final class Streamer: ObservableObject {
 
         camera.start()
         resetCameraControls()
+        healthDroppedBaseline = client.statsSnapshot().framesDropped
         startAdaptiveBitrate(target: resolution.bitrate(for: activeCodec))
         client.setStandby(false)
         if standbyActive {
@@ -548,9 +564,21 @@ final class Streamer: ObservableObject {
         adaptiveTask = Task { [weak self] in
             var current = target
             var stableSeconds = 0
+            var previousStats: StreamClient.Stats?
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, self.isStreaming else { break }
+
+                // Health overlay sample: per-second deltas of the send
+                // counters (the sleep above sets the 1 s window).
+                let stats = self.client.statsSnapshot()
+                if let previous = previousStats {
+                    self.health = StreamHealth(
+                        fps: max(0, stats.framesSent - previous.framesSent),
+                        megabitsPerSecond: Double(max(0, stats.bytesSent - previous.bytesSent)) * 8 / 1_000_000,
+                        droppedFrames: max(0, stats.framesDropped - self.healthDroppedBaseline))
+                }
+                previousStats = stats
 
                 let dropped = self.client.takeDroppedFrameCount()
                 let sendDelayMs = self.client.takeMaxSendDelayMs()
@@ -584,6 +612,7 @@ final class Streamer: ObservableObject {
 
         adaptiveTask?.cancel()
         adaptiveTask = nil
+        health = nil
         if flashlightOn {
             flashlightOn = false
         }

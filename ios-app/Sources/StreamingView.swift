@@ -11,6 +11,9 @@ struct StreamingView: View {
     @State private var lastInteraction = Date()
     @State private var pinchBaseZoom: CGFloat = 1
     @State private var previousBrightness: CGFloat = UIScreen.main.brightness
+    /// Stream health pill (fps · Mb/s · dropped). Persisted: someone who
+    /// turns it on is debugging and wants it next stream too.
+    @AppStorage("showStreamHealth") private var showHealth = false
 
     private static let dimAfterSeconds: TimeInterval = 10
 
@@ -48,6 +51,9 @@ struct StreamingView: View {
 
             VStack {
                 statusBar
+                if showHealth, let health = streamer.health {
+                    healthPill(health)
+                }
                 Spacer()
                 controlPanel
             }
@@ -121,6 +127,11 @@ struct StreamingView: View {
 
             Spacer()
 
+            ControlButton(systemImage: "gauge", active: showHealth) {
+                touched()
+                showHealth.toggle()
+            }
+
             ControlButton(systemImage: "moon.fill") {
                 touched()
                 dim()
@@ -135,6 +146,23 @@ struct StreamingView: View {
                     .background(Theme.errorRed.opacity(0.9), in: Circle())
             }
         }
+        .foregroundColor(Theme.textPrimary)
+    }
+
+    /// One-line health readout under the status bar: encoder output rate,
+    /// wire bitrate, and frames dropped by backpressure this stream. All
+    /// values come from counters the client keeps anyway (docs/ROADMAP.md
+    /// "stream health overlay"); monospaced so they don't jitter.
+    private func healthPill(_ health: Streamer.StreamHealth) -> some View {
+        HStack {
+            Text("\(health.fps) fps · "
+                 + String(format: "%.1f", health.megabitsPerSecond)
+                 + " Mb/s · \(health.droppedFrames) dropped")
+                .font(.caption.monospacedDigit())
+                .glassPill()
+            Spacer()
+        }
+        .padding(.top, Theme.Space.s)
         .foregroundColor(Theme.textPrimary)
     }
 

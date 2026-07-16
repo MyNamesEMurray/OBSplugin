@@ -127,6 +127,7 @@ surfaces.
 | Flip        | `arrow.triangle.2.circlepath.camera`      | Quick front/back |
 | Stop        | `stop.fill`                                | Red chip; the only destructive control |
 | Dim (app)   | `moon.fill`                                | App-only battery saver |
+| Stats (app) | `gauge`                                    | App-only toggle; shows a health pill (`60 fps · 11.9 Mb/s · 0 dropped`, monospaced) under the status bar |
 
 ---
 
@@ -150,8 +151,9 @@ Grouped form, top to bottom:
 ### 6.2 App — Live screen
 Full-screen black; camera preview `resizeAspect`; content over it:
 
-- **Top bar:** status pill (dot + word, left) · Dim button · Stop button
-  (red). Glass chips.
+- **Top bar:** status pill (dot + word, left) · Stats button · Dim button ·
+  Stop button (red). Glass chips. With Stats on, a health pill (fps ·
+  Mb/s · dropped) sits under the bar, leading-aligned.
 - **Bottom panel** (`glassPanel`, radius 16): zoom row, exposure row, then a
   control row of Focus segmented + (lens-position slider when **Lock**, else
   a flexible spacer) + Flashlight + Lens menu + Flip.

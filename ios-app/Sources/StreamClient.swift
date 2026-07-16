@@ -122,6 +122,22 @@ final class StreamClient {
         }
     }
 
+    /// Cumulative send-path counters, for the in-app health overlay.
+    /// Safe to call from any thread (hops to the network queue).
+    struct Stats: Equatable {
+        var framesSent = 0
+        var bytesSent = 0
+        var framesDropped = 0
+    }
+
+    func statsSnapshot() -> Stats {
+        queue.sync {
+            Stats(framesSent: diagVideoSent,
+                  bytesSent: diagVideoBytes,
+                  framesDropped: diagVideoDropped)
+        }
+    }
+
     /// One-line send-path snapshot for the diagnostics heartbeat. The
     /// broadcast extension forwards this to the plugin, which logs it, so
     /// the phone's view of the stream shows up in the OBS log too.
