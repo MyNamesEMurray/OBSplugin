@@ -1,0 +1,27 @@
+# Editor defaults matching the existing conventions:
+# C follows OBS style (tabs); Swift and Python use 4 spaces; YAML/JSON 2.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,h,cpp}]
+indent_style = tab
+
+[*.swift]
+indent_style = space
+indent_size = 4
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false

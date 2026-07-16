@@ -10,3 +10,15 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Python (assets/make-icon.py)
+__pycache__/
+
+# Inno Setup build output
+installer/windows/Output/
+
+# CMake local presets
+CMakeUserPresets.json
+
+# Claude Code local settings
+.claude/settings.local.json

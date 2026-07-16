@@ -3,6 +3,8 @@
   <img src="assets/banner-light.png" alt="LensLink" width="560">
 </picture>
 
+[![Latest release](https://img.shields.io/github/v/release/MyNamesEMurray/LensLink)](../../releases/latest)
+
 Use your iPhone or iPad as a high-quality camera **directly inside OBS
 Studio** — over Wi-Fi or a USB cable. No virtual-camera drivers, no RTMP
 server, no monthly subscription.
