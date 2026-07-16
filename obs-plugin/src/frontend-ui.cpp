@@ -270,6 +270,9 @@ void show_settings_dialog(void *)
 	auto *diag = new QCheckBox(obs_module_text("Settings.Diagnostics"),
 				   &dialog);
 	auto *dump = new QCheckBox(obs_module_text("Settings.Dump"), &dialog);
+	auto *bench = new QCheckBox(obs_module_text("Settings.Benchmark"),
+				    &dialog);
+	bench->setToolTip(obs_module_text("Settings.Benchmark.Tip"));
 
 	obs_data_t *current = lenslink_settings_snapshot();
 	gpu->setChecked(obs_data_get_bool(current, LLS_GPU_PIPELINE));
@@ -277,6 +280,7 @@ void show_settings_dialog(void *)
 	port->setValue((int)obs_data_get_int(current, LLS_WEB_PORT));
 	diag->setChecked(obs_data_get_bool(current, LLS_DIAGNOSTICS));
 	dump->setChecked(obs_data_get_bool(current, LLS_DUMP_STREAM));
+	bench->setChecked(obs_data_get_bool(current, LLS_BENCHMARK));
 	obs_data_release(current);
 
 	layout->addWidget(gpu);
@@ -289,6 +293,7 @@ void show_settings_dialog(void *)
 	layout->addSpacing(12);
 	layout->addWidget(diag);
 	layout->addWidget(dump);
+	layout->addWidget(bench);
 
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
 						     QDialogButtonBox::Cancel,
@@ -308,6 +313,7 @@ void show_settings_dialog(void *)
 	obs_data_set_int(values, LLS_WEB_PORT, port->value());
 	obs_data_set_bool(values, LLS_DIAGNOSTICS, diag->isChecked());
 	obs_data_set_bool(values, LLS_DUMP_STREAM, dump->isChecked());
+	obs_data_set_bool(values, LLS_BENCHMARK, bench->isChecked());
 	lenslink_settings_update(values);
 	obs_data_release(values);
 

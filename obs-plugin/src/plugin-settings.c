@@ -12,6 +12,7 @@ static bool g_web_enabled = true;
 static int g_web_port = LLS_WEB_PORT_DEFAULT;
 static bool g_diagnostics = true;
 static bool g_dump_stream = false;
+static bool g_benchmark = false;
 
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -35,6 +36,7 @@ static void load_from(obs_data_t *data)
 						     : LLS_WEB_PORT_DEFAULT;
 	g_diagnostics = obs_data_get_bool(data, LLS_DIAGNOSTICS);
 	g_dump_stream = obs_data_get_bool(data, LLS_DUMP_STREAM);
+	g_benchmark = obs_data_get_bool(data, LLS_BENCHMARK);
 	pthread_mutex_unlock(&g_mutex);
 }
 
@@ -45,6 +47,7 @@ static void set_defaults(obs_data_t *data)
 	obs_data_set_default_int(data, LLS_WEB_PORT, LLS_WEB_PORT_DEFAULT);
 	obs_data_set_default_bool(data, LLS_DIAGNOSTICS, true);
 	obs_data_set_default_bool(data, LLS_DUMP_STREAM, false);
+	obs_data_set_default_bool(data, LLS_BENCHMARK, false);
 }
 
 void lenslink_settings_init(void)
@@ -96,6 +99,11 @@ bool lenslink_settings_dump_stream(void)
 	return g_dump_stream;
 }
 
+bool lenslink_settings_benchmark(void)
+{
+	return g_benchmark;
+}
+
 obs_data_t *lenslink_settings_snapshot(void)
 {
 	obs_data_t *data = obs_data_create();
@@ -105,6 +113,7 @@ obs_data_t *lenslink_settings_snapshot(void)
 	obs_data_set_int(data, LLS_WEB_PORT, g_web_port);
 	obs_data_set_bool(data, LLS_DIAGNOSTICS, g_diagnostics);
 	obs_data_set_bool(data, LLS_DUMP_STREAM, g_dump_stream);
+	obs_data_set_bool(data, LLS_BENCHMARK, g_benchmark);
 	pthread_mutex_unlock(&g_mutex);
 	return data;
 }

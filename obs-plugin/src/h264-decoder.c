@@ -9,6 +9,8 @@
 #include <media-io/video-io.h>
 #include <util/platform.h>
 
+#include "pipeline-bench.h"
+
 struct h264_decoder {
 	AVCodecContext *ctx;
 	AVPacket *pkt;
@@ -361,6 +363,8 @@ bool h264_decoder_decode(struct h264_decoder *dec, obs_source_t *source,
 		}
 
 		const AVFrame *out_frame = dec->frame;
+		uint64_t bench_start = os_gettime_ns();
+		bool downloaded = false;
 
 		/* GPU-decoded frames live in GPU memory; copy to system
 		 * memory for obs_source_output_video. */
@@ -375,6 +379,7 @@ bool h264_decoder_decode(struct h264_decoder *dec, obs_source_t *source,
 			}
 			av_frame_copy_props(dec->sw_frame, dec->frame);
 			out_frame = dec->sw_frame;
+			downloaded = true;
 		}
 
 		struct obs_source_frame out = {0};
@@ -391,6 +396,24 @@ bool h264_decoder_decode(struct h264_decoder *dec, obs_source_t *source,
 					: os_gettime_ns();
 
 		obs_source_output_video(source, &out);
+
+		/* Benchmark: the standard pipeline's per-frame cost is the
+		 * GPU download (when hardware-decoded) plus the copy
+		 * obs_source_output_video makes into its frame cache — both
+		 * inside this timing window. Bytes: one frame per copy
+		 * (approximate by format; NV12/I420 = 1.5 B/px). */
+		if (out.width) {
+			size_t px = (size_t)out.width * out.height;
+			size_t frame_bytes = px * 3 / 2;
+			if (out.format == VIDEO_FORMAT_I422)
+				frame_bytes = px * 2;
+			else if (out.format == VIDEO_FORMAT_P010)
+				frame_bytes = px * 3;
+			lenslink_bench_frame(
+				os_gettime_ns() - bench_start,
+				frame_bytes * (downloaded ? 2 : 1),
+				out_frame->width, out_frame->height);
+		}
 
 		dec->frames_output++;
 		dec->last_width = out_frame->width;

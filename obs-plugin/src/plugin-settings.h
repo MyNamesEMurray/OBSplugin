@@ -33,6 +33,8 @@ bool lenslink_settings_web_enabled(void);
 int lenslink_settings_web_port(void);
 bool lenslink_settings_diagnostics(void);
 bool lenslink_settings_dump_stream(void);
+/* Pipeline benchmark logging (see pipeline-bench.h). */
+bool lenslink_settings_benchmark(void);
 
 /* Applies (and persists) new values from the settings dialog. Web/
  * diagnostics changes take effect within ~1 s (sources poll on their
@@ -54,6 +56,7 @@ void ios_camera_apply_global_settings(void);
 #define LLS_WEB_PORT "web_control_port"
 #define LLS_DIAGNOSTICS "diagnostics"
 #define LLS_DUMP_STREAM "dump_stream"
+#define LLS_BENCHMARK "pipeline_benchmark"
 
 #define LLS_WEB_PORT_DEFAULT 9980
 

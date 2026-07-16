@@ -26,6 +26,7 @@
 #include "lipsync.h"
 #include "plugin-settings.h"
 #include "gpu-frame.h"
+#include "pipeline-bench.h"
 
 #include <libavutil/frame.h>
 
@@ -1131,6 +1132,10 @@ static void stats_tick(struct ios_camera_source *s, struct client_state *c)
 	if (now - c->last_stats_ns < 1000000000ULL)
 		return;
 	c->last_stats_ns = now;
+
+	/* Piggyback the pipeline benchmark logger on this 1 Hz tick (it
+	 * rate-limits itself and no-ops when the setting is off). */
+	lenslink_bench_maybe_log();
 
 	pthread_mutex_lock(&s->status_mutex);
 	s->stat_connected = true;
@@ -2705,6 +2710,7 @@ static void ios_camera_video_render(void *data, gs_effect_t *unused)
 			av_frame_free(&s->current_frame);
 		s->current_frame = fresh;
 
+		uint64_t bench_start = os_gettime_ns();
 		if (!s->gpu)
 			s->gpu = gpu_frame_ctx_create();
 		s->gpu_mapped = false;
@@ -2718,6 +2724,16 @@ static void ios_camera_video_render(void *data, gs_effect_t *unused)
 			av_frame_free(&s->current_frame);
 			return;
 		}
+		/* Benchmark: this pipeline's per-frame cost is the texture
+		 * map (or, on fallback, the CPU upload). Bytes cross system
+		 * memory only on the fallback path. */
+		lenslink_bench_frame(os_gettime_ns() - bench_start,
+				     s->gpu_mapped ? 0
+						   : (size_t)s->gpu_map.width *
+							     s->gpu_map.height *
+							     3 / 2,
+				     (int)s->gpu_map.width,
+				     (int)s->gpu_map.height);
 	}
 	if (!s->current_frame)
 		return;

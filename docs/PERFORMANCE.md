@@ -72,5 +72,31 @@ should add as close to zero as possible.
   figure continuously — watch it in the source's Status field; ~60 ms
   over USB at 1080p is the expected baseline.
 
+### Pipeline benchmark (built-in, for the GPU-pipeline comparison)
+
+Tools → LensLink Settings → **"Log pipeline benchmark numbers every
+5 s"**. Every ~5 s of live streaming, one tagged line lands in the OBS
+log:
+
+```
+[lenslink][bench] pipeline=standard | 1920x1080 ~60 fps |
+  video-path cost/frame: avg 2.84 ms, max 4.10 ms |
+  pixel copies: 186.4 MB/s | OBS process CPU: 9.8%
+```
+
+- **video-path cost/frame** — CPU time the plugin spends moving each
+  decoded frame toward the compositor: GPU download + OBS's frame copy
+  on the standard pipeline; texture map/draw prep on the GPU pipeline.
+  This is the work the two pipelines do differently, isolated.
+- **pixel copies** — decoded video crossing system memory (0 on a
+  healthy GPU-pipeline run; nonzero there means the fallback engaged).
+- **OBS process CPU** — sampled the same way OBS's own Stats dock does.
+
+The before/after recipe: same phone, same scene, same
+resolution/fps/codec; stream ≥60 s with the GPU pipeline off, flip it on
+(restart OBS), stream the same ≥60 s, and quote a mid-run line from
+each. Those two lines are the numbers a performance claim in this repo
+should cite.
+
 Any future performance PR should quote at least one of these numbers
 before/after.

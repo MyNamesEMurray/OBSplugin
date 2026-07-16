@@ -56,6 +56,7 @@ add_library(${PROJECT_NAME} MODULE
   src/mdns.c
   src/plugin-settings.c
   src/gpu-frame.c
+  src/pipeline-bench.c
   src/protocol.h
   src/web-control.h
   src/lipsync.h
