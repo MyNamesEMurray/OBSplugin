@@ -214,6 +214,14 @@ camera expose faster).
   expire sideloaded apps every 7 days. Re-install it with Sideloadly to
   refresh (settings are kept) — or switch to the TestFlight build, which
   doesn't have this problem.
+- **"Hey Siri, start streaming with LensLink" isn't recognized (sideloaded
+  only):** re-signing tools rewrite the app's bundle ID for free Apple
+  IDs, which orphans the compiled Siri phrase data — Siri answers with a
+  generic refusal even though the same action works from the Shortcuts
+  app. Use the TestFlight build for working Siri phrases, or drive it
+  through a Shortcuts automation (`lenslink://start` works everywhere).
+  Also make sure the app has been launched once and "Use with Siri" is on
+  in Settings → Siri & Search → LensLink.
 - **Two sources, same phone:** one phone can feed one source at a time. A
   second source aimed at the same device will say it's already in use.
   Exception: with **Disconnect when this source isn't shown anywhere**
