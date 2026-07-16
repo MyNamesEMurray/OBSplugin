@@ -558,6 +558,15 @@ static void set_video_delay(struct ios_camera_source *s, int delay_ms)
 	obs_source_t *existing = obs_source_get_filter_by_name(
 		s->source, ASYNC_DELAY_FILTER_NAME);
 
+	/* The async-delay filter shifts ONLY video — a source's own audio
+	 * (the phone mic) bypasses the filter chain and would end up leading
+	 * the delayed video by exactly delay_ms. Mirror the delay onto the
+	 * source's sync offset (audio-only, a no-op while the source carries
+	 * no audio) so the pair moves together. Auto-calibration owns this
+	 * field, same contract as the external mic's sync offset. */
+	obs_source_set_sync_offset(
+		s->source, delay_ms > 0 ? (int64_t)delay_ms * 1000000 : 0);
+
 	if (delay_ms <= 0) {
 		if (existing) {
 			obs_source_filter_remove(s->source, existing);

@@ -179,6 +179,8 @@ struct StreamingView: View {
 
             whiteBalanceRow
 
+            micRow
+
             HStack(spacing: Theme.Space.m) {
                 Picker("Focus", selection: $streamer.focusSetting) {
                     Text("AF").tag(Streamer.FocusSetting.auto)
@@ -326,6 +328,45 @@ struct StreamingView: View {
                 }
             }
         }
+    }
+
+    /// Mic picker: which microphone feeds OBS. Shown only while the phone
+    /// mic is being sent as the source's audio (Options → Send phone mic);
+    /// switching is live — the tap re-installs on the new input.
+    @ViewBuilder
+    private var micRow: some View {
+        if streamer.sendMicAudio {
+            HStack(spacing: Theme.Space.m) {
+                Image(systemName: "mic.fill")
+                Menu {
+                    ForEach(streamer.micOptions) { mic in
+                        Button {
+                            touched()
+                            streamer.selectedMicID = mic.id
+                        } label: {
+                            if mic.id == streamer.selectedMicID {
+                                Label(mic.name, systemImage: "checkmark")
+                            } else {
+                                Text(mic.name)
+                            }
+                        }
+                    }
+                } label: {
+                    Text(selectedMicName)
+                        .font(.subheadline)
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(.horizontal, Theme.Space.m)
+                        .frame(height: Theme.controlButton)
+                        .background(Theme.glassChip, in: Capsule())
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private var selectedMicName: String {
+        streamer.micOptions
+            .first { $0.id == streamer.selectedMicID }?.name ?? "Auto"
     }
 
     private var isoRange: ClosedRange<CGFloat> {
