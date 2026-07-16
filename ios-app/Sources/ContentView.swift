@@ -301,6 +301,9 @@ struct ContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            Link(destination: Self.reportProblemURL) {
+                Label("Report a problem", systemImage: "ladybug")
+            }
             Link(destination: URL(string: "https://github.com/MyNamesEMurray/LensLink")!) {
                 Label("LensLink on GitHub", systemImage: "link")
             }
@@ -308,6 +311,33 @@ struct ContentView: View {
             Text("OBS plugin downloads, guides, and bug reports. \(Self.versionLine)")
         }
     }
+
+    /// The GitHub bug-report form with the phone-side facts prefilled
+    /// through the form's field ids (template query parameters) — testers
+    /// shouldn't have to transcribe build numbers and device names.
+    private static let reportProblemURL: URL = {
+        var sys = utsname()
+        uname(&sys)
+        let model = withUnsafePointer(to: &sys.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(validatingUTF8: $0) ?? "unknown"
+            }
+        }
+        var url = URLComponents(
+            string: "https://github.com/MyNamesEMurray/LensLink/issues/new")!
+        var items = [
+            URLQueryItem(name: "template", value: "bug-report.yml"),
+            URLQueryItem(name: "versions", value:
+                "\(versionLine), \(model), iOS \(UIDevice.current.systemVersion)"),
+        ]
+        // TestFlight builds carry a sandbox receipt; prefill the install
+        // dropdown so reports say which distribution they came from.
+        if Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" {
+            items.append(URLQueryItem(name: "install", value: "TestFlight"))
+        }
+        url.queryItems = items
+        return url.url!
+    }()
 
     private static let versionLine: String = {
         let info = Bundle.main.infoDictionary
