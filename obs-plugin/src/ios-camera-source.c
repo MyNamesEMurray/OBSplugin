@@ -470,7 +470,15 @@ struct client_state {
 	struct recv_buf buf;
 	struct send_buf out;
 	struct h264_decoder *decoder;
-	bool hw_failed; /* GPU decode failed once: stay on software */
+	/* Next hardware-API priority slot to try. Each hardware decoder
+	 * that errors or silently emits nothing advances this by one, so
+	 * the connection walks the platform's whole list (e.g. D3D11VA →
+	 * DXVA2) before settling on software — a driver rejecting a stream
+	 * on one API frequently decodes it fine on the next. */
+	int hw_retry;
+	/* video_packets at the current decoder's creation: each decoder in
+	 * the fallback walk gets its own no-output grace window. */
+	uint64_t packets_at_decoder;
 	bool is_screen; /* screen mirror (plays system audio) vs camera */
 	bool standby;   /* app is idle, waiting for a start_stream command */
 	bool auth_required; /* app demands pairing before anything flows */
@@ -1257,11 +1265,11 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			 * it disarmed, so a hardware decoder that accepted
 			 * packets but emitted nothing froze the source
 			 * forever (works on a fresh connection, froze on a
-			 * mid-stream HEVC→H.264 switch). hw_failed resets
+			 * mid-stream HEVC→H.264 switch). hw_retry resets
 			 * too: it described the OLD codec's hardware path;
-			 * the new codec deserves its own hardware attempt,
-			 * with the watchdog and the error path both armed to
-			 * catch it. */
+			 * the new codec deserves its own walk of the
+			 * hardware list, with the watchdog and the error
+			 * path both armed to advance it. */
 			c->video_packets = 0;
 			c->video_bytes = 0;
 			c->keyframes_seen = 0;
@@ -1269,7 +1277,8 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			c->decode_errors = 0;
 			c->first_frame_ns = 0;
 			c->no_output_warned = false;
-			c->hw_failed = false;
+			c->hw_retry = 0;
+			c->packets_at_decoder = c->video_packets;
 			c->next_decoder_attempt = 0;
 			/* Diagnostics measure per decode-stream from here. */
 			c->connected_ns = os_gettime_ns();
@@ -1299,7 +1308,7 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 				c->codec_id != AV_CODEC_ID_NONE
 					? c->codec_id
 					: AV_CODEC_ID_H264,
-				s->hw_decode && !c->hw_failed);
+				s->hw_decode, c->hw_retry);
 			if (!c->decoder) {
 				c->next_decoder_attempt =
 					now + 5000000000ULL;
@@ -1308,17 +1317,21 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 				break;
 			}
 			c->next_decoder_attempt = 0;
+			c->packets_at_decoder = c->video_packets;
 		}
 		if (!h264_decoder_decode(c->decoder, s->source, payload,
 					 hdr->payload_size, hdr->pts_ns)) {
 			c->decode_errors++;
 			if (h264_decoder_is_hw(c->decoder)) {
-				/* GPU path misbehaved: recreate in software
-				 * for the rest of this connection. */
+				/* This GPU path misbehaved on this stream:
+				 * advance to the next hardware API (then
+				 * software once the list is exhausted). */
+				c->hw_retry =
+					h264_decoder_hw_index(c->decoder) + 1;
 				blog(LOG_WARNING,
-				     "[lenslink] hardware decode error, "
-				     "switching to software");
-				c->hw_failed = true;
+				     "[lenslink] %s decode error — trying "
+				     "the next decoder",
+				     h264_decoder_hw_name(c->decoder));
 			} else {
 				blog(LOG_WARNING,
 				     "[lenslink] decoder error, resetting");
@@ -1361,21 +1374,25 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		 * tall, non-16-aligned screen-mirror resolutions on D3D11VA
 		 * (e.g. 886x1918). avcodec_send_packet succeeds and
 		 * avcodec_receive_frame just returns EAGAIN forever, so decode
-		 * "succeeds" while OBS stays black. Auto-fall back to software
-		 * instead of leaving a black source; hardware stays the default
-		 * and is retried on the next connection. ~10 packets is ~1/6 s
-		 * at 60 fps — long enough not to trip on a decoder's normal
-		 * one-frame startup, short enough to recover quickly. */
+		 * "succeeds" while OBS stays black. Advance to the next
+		 * hardware API (software once the list is exhausted) instead
+		 * of leaving a black source; the walk restarts from the best
+		 * API on the next connection or codec switch. ~10 packets is
+		 * ~1/6 s at 60 fps — long enough not to trip on a decoder's
+		 * normal one-frame startup, short enough to recover quickly.
+		 * The counters aren't reset on fallback, so if the next API
+		 * also emits nothing this fires again and keeps walking. */
 		if (c->frames_output == 0 && c->keyframes_seen > 0 &&
-		    c->video_packets >= 10) {
-			if (c->decoder && h264_decoder_is_hw(c->decoder) &&
-			    !c->hw_failed) {
+		    c->video_packets - c->packets_at_decoder >= 10) {
+			if (c->decoder && h264_decoder_is_hw(c->decoder)) {
 				blog(LOG_WARNING,
-				     "[lenslink] hardware decoder produced no "
-				     "frames after %llu packets — falling back "
-				     "to software decoding",
+				     "[lenslink] %s decoder produced no "
+				     "frames after %llu packets — trying "
+				     "the next decoder",
+				     h264_decoder_hw_name(c->decoder),
 				     (unsigned long long)c->video_packets);
-				c->hw_failed = true;
+				c->hw_retry =
+					h264_decoder_hw_index(c->decoder) + 1;
 				h264_decoder_destroy(c->decoder);
 				c->decoder = NULL;
 				/* Recreated in software on the next keyframe;
