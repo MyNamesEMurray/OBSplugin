@@ -124,8 +124,10 @@ option):
   phone** and **Stop camera on the phone**, and the browser panel
   (`http://localhost:9980`) shows a **Start camera** button whenever the
   app is connected but idle, and a red **Stop camera** button while it's
-  live. (Scriptable, too: `POST http://localhost:9980/api/control` with
-  body `{"cmd":"start_stream"}` or `{"cmd":"stop_stream"}`.)
+  live — each with an **Auto-start** toggle beside it that flips the same
+  setting as the properties checkbox. (Scriptable, too:
+  `POST http://localhost:9980/api/control` with body
+  `{"cmd":"start_stream"}` or `{"cmd":"stop_stream"}`.)
 - **Siri / Shortcuts.** *"Hey Siri, start streaming with LensLink"* opens
   the app and starts the camera (iOS 16+). The **Start/Stop Camera
   Stream** actions are available in the Shortcuts app for automations; on

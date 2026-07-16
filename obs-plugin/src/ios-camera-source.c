@@ -150,6 +150,11 @@ struct ios_camera_source {
 	 * Guarded by status_mutex; lets the web panel offer a Start button. */
 	bool standby;
 
+	/* A device connection is live (HELLO received). Guarded by
+	 * status_mutex; lets the web panel show live controls only when
+	 * there is actually something to control. */
+	bool stat_connected;
+
 	pthread_mutex_t status_mutex;
 	struct dstr status;
 };
@@ -168,6 +173,31 @@ bool ios_camera_is_standby(struct ios_camera_source *s)
 	bool v = s->standby;
 	pthread_mutex_unlock(&s->status_mutex);
 	return v;
+}
+
+bool ios_camera_is_connected(struct ios_camera_source *s)
+{
+	pthread_mutex_lock(&s->status_mutex);
+	bool v = s->stat_connected;
+	pthread_mutex_unlock(&s->status_mutex);
+	return v;
+}
+
+bool ios_camera_auto_start(struct ios_camera_source *s)
+{
+	return s->auto_start;
+}
+
+/* Web-panel toggle for the auto-start property: persist it through the
+ * source's settings so the properties checkbox and the panel stay one
+ * value. obs_source_update is safe from the web thread; our update()
+ * only restarts the dial thread when connection settings change. */
+void ios_camera_set_auto_start(struct ios_camera_source *s, bool on)
+{
+	obs_data_t *settings = obs_source_get_settings(s->source);
+	obs_data_set_bool(settings, S_AUTO_START, on);
+	obs_source_update(s->source, settings);
+	obs_data_release(settings);
 }
 
 static enum connection_mode parse_mode(const char *mode)
@@ -893,6 +923,7 @@ static void client_disconnect(struct ios_camera_source *s,
 	s->device_state[0] = 0;
 	s->is_screen = false;
 	s->standby = false;
+	s->stat_connected = false;
 	pthread_mutex_unlock(&s->status_mutex);
 
 	/* A kind-mismatch rejection needs its actionable status to survive
@@ -971,6 +1002,7 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		pthread_mutex_lock(&s->status_mutex);
 		s->is_screen = c->is_screen;
 		s->standby = c->standby;
+		s->stat_connected = true;
 		pthread_mutex_unlock(&s->status_mutex);
 		blog(LOG_INFO, "[lenslink] client connected: %s (%s%s)",
 		     c->name[0] ? c->name : "(unnamed)",
