@@ -16,6 +16,75 @@ final class AudioReference {
         case playback
     }
 
+    /// A selectable microphone. `id` is stable across STATE snapshots so
+    /// remote UIs can round-trip it: "auto" (system routing, the default),
+    /// "builtin:<dataSourceID>" for one of the phone's physical mics
+    /// (Bottom/Front/Back), or "port:<uid>" for an external input
+    /// (headset, USB, Bluetooth).
+    struct MicOption: Identifiable, Equatable {
+        let id: String
+        let name: String
+    }
+
+    /// The session's selectable inputs, flattened: "Auto" first, the
+    /// built-in mic's data sources as individual options, then every
+    /// external port. (Requires a record-capable session category, so the
+    /// list is meaningful only while mic capture is configured.)
+    static func availableMics() -> [MicOption] {
+        var mics = [MicOption(id: "auto", name: "Auto")]
+        for port in AVAudioSession.sharedInstance().availableInputs ?? [] {
+            if port.portType == .builtInMic {
+                for source in port.dataSources ?? [] {
+                    mics.append(MicOption(
+                        id: "builtin:\(source.dataSourceID)",
+                        name: source.dataSourceName))
+                }
+            } else {
+                mics.append(MicOption(id: "port:\(port.uid)",
+                                      name: port.portName))
+            }
+        }
+        return mics
+    }
+
+    /// Applies a mic choice (an id from `availableMics()`) to the shared
+    /// session. Safe mid-capture: the resulting route change fires the
+    /// engine's configuration-change notification and the tap re-installs
+    /// on the new input (~100 ms audio gap, video untouched). Unknown ids
+    /// (a Bluetooth mic that just left) are ignored.
+    static func select(micID: String) {
+        let session = AVAudioSession.sharedInstance()
+        let inputs = session.availableInputs ?? []
+        do {
+            if micID == "auto" {
+                if let builtin = inputs.first(where: { $0.portType == .builtInMic }) {
+                    try builtin.setPreferredDataSource(nil)
+                }
+                try session.setPreferredInput(nil)
+            } else if micID.hasPrefix("builtin:") {
+                let sourceID = String(micID.dropFirst("builtin:".count))
+                guard let builtin = inputs.first(where: { $0.portType == .builtInMic })
+                else { return }
+                if let source = builtin.dataSources?
+                    .first(where: { "\($0.dataSourceID)" == sourceID }) {
+                    try builtin.setPreferredDataSource(source)
+                }
+                try session.setPreferredInput(builtin)
+            } else if micID.hasPrefix("port:") {
+                let uid = String(micID.dropFirst("port:".count))
+                guard let port = inputs.first(where: { $0.uid == uid })
+                else { return }
+                try session.setPreferredInput(port)
+            }
+        } catch {
+            print("Mic selection failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Mic to prefer whenever capture (re)starts; live changes go through
+    /// `select(micID:)` and land here so restarts keep the choice.
+    var preferredMicID = "auto"
+
     /// Delivers a chunk of S16LE PCM (format per `Purpose`) plus the
     /// capture time of its first sample, in the same clock domain as
     /// video frame pts.
@@ -71,6 +140,7 @@ final class AudioReference {
                                 options: [.mixWithOthers, .allowBluetooth,
                                           .defaultToSpeaker])
         try session.setActive(true)
+        Self.select(micID: preferredMicID)
 
         let input = engine.inputNode
         let inputFormat = input.inputFormat(forBus: 0)

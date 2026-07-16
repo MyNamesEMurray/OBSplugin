@@ -159,6 +159,24 @@ final class Streamer: ObservableObject {
             }
         }
     }
+    /// Which microphone feeds the capture (an `AudioReference.MicOption`
+    /// id; "auto" = system routing). Hot-switchable mid-stream, from the
+    /// Live screen or the web panel's mic row.
+    @Published var selectedMicID: String {
+        didSet {
+            UserDefaults.standard.set(selectedMicID, forKey: "selectedMic")
+            audioReference?.preferredMicID = selectedMicID
+            if audioReference != nil {
+                AudioReference.select(micID: selectedMicID)
+            }
+            scheduleStateSend()
+        }
+    }
+    /// Selectable mics right now. Live list — recomputed per access so a
+    /// headset connecting mid-stream shows up on the next UI refresh.
+    var micOptions: [AudioReference.MicOption] {
+        AudioReference.availableMics()
+    }
     // MARK: - Pairing
 
     /// Require computers to pair (one-time PIN) before they can watch or
@@ -428,7 +446,7 @@ final class Streamer: ObservableObject {
 
     private func controlStateSnapshot() -> [String: Any] {
         let (resolutions, frameRates) = formatCapabilities()
-        return [
+        var state: [String: Any] = [
             "zoom": Double(zoom),
             "maxZoom": Double(camera.maxZoomFactor),
             "exposureBias": Double(exposureBias),
@@ -463,6 +481,15 @@ final class Streamer: ObservableObject {
                 .filter { VideoEncoder.isSupported($0) }
                 .map { $0.rawValue },
         ]
+        // Mic picker (docs/PROTOCOL.md §8): only while the phone mic is
+        // live as the source's audio — remote UIs key their row off
+        // micEnabled, and the list is only meaningful with capture up.
+        if sendMicAudio, audioReference != nil {
+            state["micEnabled"] = true
+            state["mic"] = selectedMicID
+            state["mics"] = micOptions.map { ["id": $0.id, "name": $0.name] }
+        }
+        return state
     }
 
     /// Capability lists for the STATE snapshot. Cached per lens+resolution:
@@ -578,6 +605,7 @@ final class Streamer: ObservableObject {
         // didSet doesn't run during init; enforce the exclusivity here.
         sendMicAudio = defaults.bool(forKey: "sendMicAudio")
             && !defaults.bool(forKey: "sendAudioReference")
+        selectedMicID = defaults.string(forKey: "selectedMic") ?? "auto"
         remoteStartEnabled = defaults.object(forKey: "remoteStartEnabled") as? Bool ?? true
         followOrientation = defaults.bool(forKey: "followOrientation")
         requirePairing = defaults.bool(forKey: "requirePairing")
@@ -776,6 +804,13 @@ final class Streamer: ObservableObject {
                 (command["mode"] as? String) == "manual" ? .manual : .auto
         case "set_format":
             applyRemoteFormat(command)
+        case "mic":
+            // Validate against the live list: a stale remote UI can name a
+            // mic that just left (Bluetooth), and the id must not stick.
+            if let id = command["id"] as? String,
+               micOptions.contains(where: { $0.id == id }) {
+                selectedMicID = id
+            }
         case "selectLens":
             if let label = command["label"] as? String,
                let lens = availableLenses.first(where: { $0.label == label }),
@@ -930,6 +965,7 @@ final class Streamer: ObservableObject {
             return
         }
         let capture = AudioReference(purpose: purpose)
+        capture.preferredMicID = selectedMicID
         capture.onPCM = { [weak self] pcm, pts in
             switch purpose {
             case .lipSyncReference:
@@ -941,6 +977,9 @@ final class Streamer: ObservableObject {
         do {
             try capture.start()
             audioReference = capture
+            // The STATE snapshot gates its mic fields on capture being
+            // up; resend now that it is.
+            scheduleStateSend()
         } catch {
             print("Mic capture failed: \(error.localizedDescription)")
         }

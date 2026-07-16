@@ -131,6 +131,12 @@ static const char control_page[] =
 	"style='display:none'>"
 	"<span class='ro' id='wbv' style='display:none'>5000K</span>"
 	"<span class='hint' id='wbhint'>Auto white balance</span></div>"
+	/* Mic picker: shown while the app streams its mic as the source's
+	 * audio (STATE micEnabled) — mirrors the app's mic row. */
+	"<div class='row' id='microw' style='display:none'>"
+	"<span class='lbl'>Mic</span>"
+	"<select id='micsel' title='Phone microphone'></select>"
+	"<span class='hint'>Phone microphone</span></div>"
 	"<div class='row'>"
 	"<div class='seg'><button id='af' class='on'>AF</button>"
 	"<button id='mf'>Lock</button></div>"
@@ -179,7 +185,8 @@ static const char control_page[] =
 	"isorowEl=$('isorow'),isoEl=$('iso'),isovEl=$('isov'),"
 	"shutrowEl=$('shutrow'),shutEl=$('shut'),shutvEl=$('shutv'),"
 	"wbrowEl=$('wbrow'),awbEl=$('awb'),wblEl=$('wbl'),wbtempEl=$('wbtemp'),"
-	"wbvEl=$('wbv'),wbhintEl=$('wbhint');"
+	"wbvEl=$('wbv'),wbhintEl=$('wbhint'),"
+	"microwEl=$('microw'),micselEl=$('micsel');"
 	"const COL={live:'#30D158',amber:'#FF9F0A',red:'#FF453A',grey:'#8E8E93'};"
 	"let lastTouch=0;const touch=()=>lastTouch=Date.now();"
 	"const send=o=>{touch();"
@@ -254,6 +261,7 @@ static const char control_page[] =
 	"const dWb=deb(()=>send({cmd:'white_balance',mode:'locked',"
 	"temperature:+wbtempEl.value}),60);"
 	"wbtempEl.oninput=()=>{touch();wbvEl.textContent=wbtempEl.value+'K';dWb()};"
+	"micselEl.onchange=()=>send({cmd:'mic',id:micselEl.value});"
 	"function statusColor(t){t=(t||'').toLowerCase();"
 	/* Standby/starting are amber (ready, not live) — test before the
 	 * generic 'connected' match, which their wording also contains. */
@@ -313,6 +321,12 @@ static const char control_page[] =
 	"if(typeof st.whiteBalanceTemperature==='number'){"
 	"wbtempEl.value=Math.round(st.whiteBalanceTemperature);"
 	"wbvEl.textContent=Math.round(st.whiteBalanceTemperature)+'K'}}"
+	/* Mic picker, only while the phone mic is live as source audio.
+	 * Options are {id,name} pairs: ids round-trip, names display. */
+	"microwEl.style.display=st.micEnabled?'':'none';"
+	"if(st.micEnabled&&Array.isArray(st.mics)){const mn={};"
+	"st.mics.forEach(m=>mn[m.id]=m.name);"
+	"fillSel(micselEl,st.mics.map(m=>m.id),st.mic,i=>mn[i]||i)}"
 	/* Format pickers, populated from the app's capability lists. */
 	"if(Array.isArray(st.resolutions)&&Array.isArray(st.frameRates)){"
 	"fmtrowEl.style.display='';"
