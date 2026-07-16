@@ -220,4 +220,6 @@ camera expose faster).
 ## Contributing
 
 Architecture, the wire protocol, and the build/release setup are documented
-in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md). Planned improvements and
+recommended future work live in [`docs/ROADMAP.md`](docs/ROADMAP.md);
+performance ground rules in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
