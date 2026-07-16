@@ -33,7 +33,7 @@ jobs:
     name: Build & upload to TestFlight
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Guard on secrets
         env:

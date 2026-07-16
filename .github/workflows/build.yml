@@ -24,7 +24,7 @@ jobs:
       plugin: ${{ steps.diff.outputs.plugin }}
       ios: ${{ steps.diff.outputs.ios }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Diff against base
         id: diff
@@ -58,7 +58,7 @@ jobs:
     if: needs.changes.outputs.plugin == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -75,7 +75,7 @@ jobs:
         working-directory: obs-plugin
 
       - name: Upload plugin artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: lenslink-linux-x86_64
           path: |
@@ -94,13 +94,13 @@ jobs:
       OBS_REF: "32.1.2"
       DEPS_TAG: "2025-08-23"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # No submodules here: cache-hit runs only need in-tree headers
       # (libobs/, deps/w32-pthreads/). The recursive fetch is minutes of
       # overhead, so it moves into the cache-miss build step below.
       - name: Checkout obs-studio (for libobs)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_REF }}
@@ -119,7 +119,7 @@ jobs:
 
       - name: Cache libobs build
         id: cache-libobs
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: obs-build
           key: libobs-${{ env.OBS_REF }}-${{ env.DEPS_TAG }}
@@ -164,7 +164,7 @@ jobs:
           iscc /DAppVersion=0.0.0 installer\windows\lenslink.iss
 
       - name: Upload plugin artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: lenslink-windows-x64
           path: |
@@ -183,13 +183,13 @@ jobs:
       OBS_REF: "32.1.2"
       DEPS_TAG: "2025-08-23"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # No submodules here: cache-hit runs only need in-tree headers
       # (libobs/). The recursive fetch is minutes of overhead, so it moves
       # into the cache-miss build step below.
       - name: Checkout obs-studio (for libobs)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: obsproject/obs-studio
           ref: ${{ env.OBS_REF }}
@@ -208,7 +208,7 @@ jobs:
       # Windows job already uses libobs-<ref>-<tag> for its MSVC build.
       - name: Cache libobs build
         id: cache-libobs
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: obs-build
           key: libobs-macos-${{ env.OBS_REF }}-${{ env.DEPS_TAG }}
@@ -279,7 +279,7 @@ jobs:
             LensLink-installer-macos-universal.pkg
 
       - name: Upload plugin artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: lenslink-macos-universal
           path: |
@@ -294,7 +294,7 @@ jobs:
     # Xcode 15 (macos-14 runners) cannot open.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -324,7 +324,7 @@ jobs:
         working-directory: ios-app
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: LensLink-unsigned-ipa
           path: ios-app/LensLink-unsigned.ipa
