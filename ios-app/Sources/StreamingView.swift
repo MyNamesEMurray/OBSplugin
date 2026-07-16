@@ -329,9 +329,11 @@ struct StreamingView: View {
     }
 
     private var isoRange: ClosedRange<CGFloat> {
+        // One line: a leading "..." on a continuation line parses as a
+        // separate prefix-range statement, not as this range.
         let range = streamer.camera.isoRange
-        return CGFloat(range.lowerBound)
-            ...CGFloat(max(range.upperBound, range.lowerBound + 1))
+        let upper = CGFloat(max(range.upperBound, range.lowerBound + 1))
+        return CGFloat(range.lowerBound)...upper
     }
 
     /// Maps shutterSeconds onto a 0…1 log-scale slider position, with
