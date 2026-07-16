@@ -70,17 +70,7 @@ you do.*
 Ranked by how much they'd matter to a typical streamer, weighed against
 effort. These extend features that already exist.
 
-### 1. Bonjour discovery — stop typing IPs
-The app advertises its listener as `_lenslink._tcp` (one line on an
-`NWListener`); the plugin browses and shows discovered phones by name in
-the source properties, the way the USB device picker already works.
-Kills the most error-prone step of setup ("enter the phone's IP"),
-survives DHCP renumbering, and pairs naturally with remote start: add
-the source once, and any time the app opens, OBS finds it and starts it.
-mDNS libraries exist for all three plugin platforms (or speak the
-protocol directly — it's small). *Medium effort, biggest day-one UX win.*
-
-### 2. Optional pairing & encryption — close the trusted-LAN caveat
+### 1. Optional pairing & encryption — close the trusted-LAN caveat
 The README honestly says the stream is unencrypted and intended for
 trusted networks, and remote start raises the stakes (any LAN peer could
 send `start_stream`). A one-time pairing (PIN shown in the app, entered

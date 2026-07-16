@@ -54,8 +54,13 @@ phone.
 2. In OBS, add a source: **Sources → + → LensLink Camera** (or **LensLink
    Screen** to mirror the phone's screen instead — see below).
 3. Point it at your phone:
-   - **Wi-Fi** — enter the IP the app shows as the **Phone IP**. (Phone and
-     computer must be on the same network.)
+   - **Wi-Fi** — open the **Phone** dropdown and pick your phone (it's
+     found automatically by name while the app is open), or enter the IP
+     the app shows. (Phone and computer must be on the same network.)
+     If the phone doesn't appear by name, check that **Settings → Privacy
+     & Security → Local Network → LensLink** is on — iOS needs it for the
+     name broadcast, and sideloaded builds sometimes need the toggle
+     flipped off and on once. Typing the IP works regardless.
    - **USB** — connect the cable, set **Connection → USB cable**. No
      network needed, and the phone charges while streaming.
 

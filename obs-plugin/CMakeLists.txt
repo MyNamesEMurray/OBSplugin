@@ -53,12 +53,14 @@ add_library(${PROJECT_NAME} MODULE
   src/usbmux.c
   src/web-control.c
   src/lipsync.c
+  src/mdns.c
   src/protocol.h
   src/web-control.h
   src/lipsync.h
   src/net-compat.h
   src/h264-decoder.h
   src/usbmux.h
+  src/mdns.h
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs ${FFMPEG_TARGET})

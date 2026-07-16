@@ -102,6 +102,21 @@ struct ContentView: View {
                         .textSelection(.enabled)
                 }
             }
+            if streamer.discoverable == false {
+                // The Bonjour advertise was denied: the phone won't show
+                // up by name in OBS and nothing else says why. iOS's
+                // per-app Settings page carries the Local Network toggle.
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
+                    Label("Not visible by name in OBS — tap to allow Local Network access in Settings. Connecting by IP still works.",
+                          systemImage: "wifi.exclamationmark")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
             DisclosureGroup("How to connect", isExpanded: $showConnectionHelp) {
                 Label {
                     Text("Install the LensLink plugin in OBS Studio (see the GitHub link below), then add the source you want — camera or screen — from **Sources → +**.")

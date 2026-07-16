@@ -13,6 +13,12 @@ final class StreamClient {
     }
 
     var onStateChange: ((State) -> Void)?
+    /// Whether the live listener is advertising itself over Bonjour
+    /// (nil = no listener). false means iOS denied the advertise (Local
+    /// Network permission) and the listener fell back to plain TCP — the
+    /// UI uses this to point at the Settings toggle instead of leaving
+    /// "phone missing from the OBS dropdown" a mystery.
+    var onDiscoveryChange: ((Bool?) -> Void)?
     /// Remote camera-control command (JSON) received from the plugin.
     var onControl: ((Data) -> Void)?
     /// A video frame was dropped: the reference chain is broken and the
@@ -52,6 +58,8 @@ final class StreamClient {
             // here would look like a fresh drop to the Streamer.
             self.teardownConnection()
             self.teardownListener()
+            self.listenGeneration += 1
+            self.bindRetries = 0
             self.listen(on: port)
         }
     }
@@ -61,7 +69,30 @@ final class StreamClient {
             guard let self else { return }
             self.teardownConnection()
             self.teardownListener()
+            // Invalidate any scheduled relisten (Bonjour fallback / bind
+            // retry): a retry firing after disconnect would resurrect the
+            // listener the caller just asked to stop.
+            self.listenGeneration += 1
             self.state = .disconnected
+            self.onDiscoveryChange?(nil)
+        }
+    }
+
+    /// Bumped whenever the caller starts or stops listening; scheduled
+    /// relisten retries capture it and no-op if it moved. Queue-confined.
+    private var listenGeneration = 0
+    /// EADDRINUSE retries for the current listen attempt. Queue-confined.
+    private var bindRetries = 0
+
+    /// Schedules a fresh listen attempt after `delay` — used where an
+    /// immediate rebind would race the failed listener's socket release.
+    private func relisten(on port: UInt16, advertise: Bool,
+                          after delay: TimeInterval) {
+        teardownListener()
+        let generation = listenGeneration
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.listenGeneration == generation else { return }
+            self.listen(on: port, advertise: advertise)
         }
     }
 
@@ -156,12 +187,20 @@ final class StreamClient {
         send(OBSCProtocol.packet(type: .diag, payload: payload))
     }
 
-    private func listen(on port: UInt16) {
+    private func listen(on port: UInt16, advertise: Bool = true) {
         guard let nwPort = NWEndpoint.Port(rawValue: port),
               let listener = try? NWListener(using: Self.tcpParameters(), on: nwPort) else {
             listenerStateDescription = "init failed"
             state = .failed("Could not open USB listener")
             return
+        }
+
+        // Advertise over Bonjour so the OBS plugin can discover this
+        // phone by name instead of a typed IP. The device name matches
+        // the HELLO; port comes from the service record's socket.
+        if advertise {
+            listener.service = NWListener.Service(
+                name: UIDevice.current.name, type: "_lenslink._tcp")
         }
 
         self.listener = listener
@@ -184,7 +223,36 @@ final class StreamClient {
         listener.stateUpdateHandler = { [weak self, weak listener] newState in
             guard let self, let listener, self.listener === listener else { return }
             self.listenerStateDescription = "\(newState)"
+            if case .ready = newState {
+                self.bindRetries = 0
+                self.onDiscoveryChange?(advertise)
+            }
             if case .failed(let error) = newState {
+                // Bonjour advertising is denied when Local Network
+                // permission is off (Settings → Privacy → Local Network;
+                // sideloaded builds sometimes need the toggle flipped once)
+                // — DNSServiceErr NoAuth, surfaced as a .dns NWError. The
+                // advertisement is a convenience; the listener is the
+                // product. Retry without it so typed-IP Wi-Fi and USB
+                // connects keep working, minus name discovery in OBS.
+                // Delayed: cancel releases the port asynchronously, and an
+                // immediate rebind loses that race (EADDRINUSE).
+                if advertise, case .dns = error {
+                    print("Bonjour advertise failed (\(error)) — "
+                          + "listening without discovery")
+                    self.relisten(on: port, advertise: false, after: 0.3)
+                    return
+                }
+                // The port can still be held by the socket we just gave up
+                // (or by the broadcast extension mid-hand-off). Brief
+                // retries beat surfacing a fatal for a race that resolves
+                // itself in well under a second.
+                if case .posix(let code) = error, code == .EADDRINUSE,
+                   self.bindRetries < 4 {
+                    self.bindRetries += 1
+                    self.relisten(on: port, advertise: advertise, after: 0.5)
+                    return
+                }
                 self.state = .failed(error.localizedDescription)
                 self.teardownListener()
                 self.teardownConnection()
