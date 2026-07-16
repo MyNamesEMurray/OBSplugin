@@ -1,0 +1,51 @@
+name: TestFlight Feedback
+
+# Mirrors TestFlight beta feedback (screenshots + crashes) into GitHub
+# issues, so tester reports land in the same tracker as everything else.
+# Uses the same App Store Connect API key as the TestFlight upload
+# workflow (docs/TESTFLIGHT.md) — no extra setup beyond those secrets.
+# Idempotent: each ASC submission id is mirrored at most once.
+
+on:
+  schedule:
+    - cron: "23 */6 * * *" # every 6 h; feedback isn't latency-sensitive
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  sync:
+    name: Feedback → issues
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Forks and clones won't have the secrets; skip quietly rather
+      # than fail a scheduled run.
+      - name: Guard on secrets
+        id: guard
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          if [ -n "$KEY_ID" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::App Store Connect secrets are not set — skipping (see docs/TESTFLIGHT.md)."
+          fi
+
+      - name: Install PyJWT
+        if: steps.guard.outputs.run == 'true'
+        run: pip install --quiet PyJWT cryptography
+
+      - name: Mirror feedback into issues
+        if: steps.guard.outputs.run == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          BUNDLE_ID: com.exaltedpixels.LensLinkCamera
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/testflight_feedback.py

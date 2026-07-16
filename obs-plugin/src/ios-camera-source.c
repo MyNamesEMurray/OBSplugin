@@ -2295,7 +2295,7 @@ static void ios_camera_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, S_AUTO_CALIBRATE, false);
 	obs_data_set_default_bool(settings, S_AUTO_VIDEO_DELAY, false);
 	obs_data_set_default_bool(settings, S_WEB_CONTROL, true);
-	obs_data_set_default_bool(settings, S_DIAGNOSTICS, true);
+	obs_data_set_default_bool(settings, S_DIAGNOSTICS, false);
 	obs_data_set_default_bool(settings, S_DUMP_STREAM, false);
 	obs_data_set_default_bool(settings, S_DEACTIVATE_HIDDEN, false);
 	obs_data_set_default_bool(settings, S_AUTO_START, true);
@@ -2501,9 +2501,9 @@ static obs_properties_t *lenslink_screen_get_properties(void *data)
 /* Two registered source types share this whole engine; instances only
  * differ by `is_screen_source` (set from the id at create). The camera id
  * predates the split and must never change — it's baked into users' scene
- * collections. A camera source still *plays* a screen stream if the phone
- * sends one (and vice versa), so pre-split setups keep working; the status
- * line just nudges toward the matching type. */
+ * collections. Each type accepts only its own stream kind: the HELLO
+ * handler rejects a mismatched stream (wrong_kind) and the status line
+ * says which source type to use instead. */
 
 struct obs_source_info ios_camera_source_info = {
 	.id = "ios_camera_source",

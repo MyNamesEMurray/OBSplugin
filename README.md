@@ -3,6 +3,9 @@
   <img src="assets/banner-light.png" alt="LensLink" width="560">
 </picture>
 
+[![Latest release](https://img.shields.io/github/v/release/MyNamesEMurray/LensLink)](../../releases/latest)
+[![License: GPL-2.0-or-later](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](LICENSE)
+
 Use your iPhone or iPad as a high-quality camera **directly inside OBS
 Studio** — over Wi-Fi or a USB cable. No virtual-camera drivers, no RTMP
 server, no monthly subscription.
@@ -50,7 +53,7 @@ phone.
 ## Connect
 
 1. On the phone, open **LensLink**, choose your camera/resolution/frame rate,
-   and tap **Start**. The app shows the phone's IP address.
+   and tap **Start camera stream**. The app shows the phone's IP address.
 2. In OBS, add a source: **Sources → + → LensLink Camera** (or **LensLink
    Screen** to mirror the phone's screen instead — see below).
 3. Point it at your phone:
@@ -85,10 +88,12 @@ blanks the source.
   can pin a source to a specific device so the same phone always maps to
   the same source.
 - **Live camera controls**, both on the phone (full-screen view with pinch
-  zoom, tap-to-focus, exposure, focus lock, flashlight, camera flip) and
-  **from your computer** via a browser panel at
-  `http://localhost:9980` (zoom / exposure / focus / flashlight / flip,
-  plus switching lens, resolution, frame rate, and codec mid-stream).
+  zoom, tap-to-focus, exposure, focus lock, flashlight, camera flip — plus
+  manual ISO/shutter and white-balance lock on cameras that support them)
+  and **from your computer** via a browser panel at
+  `http://localhost:9980` (the same set: zoom / exposure / manual
+  ISO & shutter / focus / white balance / flashlight / flip, plus switching
+  lens, resolution, frame rate, codec, and microphone mid-stream).
 - **Remote start.** With the app open, OBS can start the camera for you —
   automatically when the source connects, or from a button in the source's
   properties or the browser panel. Siri works too: *"Start streaming with
@@ -99,9 +104,9 @@ blanks the source.
   mobile games or app demos. Works over Wi-Fi or USB, encoded in HEVC for
   bandwidth-friendly quality. Your microphone isn't sent — mic yourself in
   OBS as usual.
-- **Phone mic audio (optional).** Turn on **Send phone mic to OBS** and the
-  camera source carries the phone's microphone as its audio — the phone
-  doubles as a wireless mic. (Off by default; most streamers use their own
+- **Phone mic audio (optional).** Turn on **Send phone mic to OBS** (in
+  the app's **Options**) and the camera source carries the phone's
+  microphone as its audio — the phone doubles as a wireless mic. (Off by default; most streamers use their own
   mic and lip-sync it instead.) A mic row on the Live screen (and in the
   web panel) picks which microphone: **Auto** is iOS's default input
   routing — normally the *Bottom* mic regardless of which camera is
@@ -112,24 +117,27 @@ blanks the source.
 - **Automatic lip sync.** The plugin measures the camera's latency and can
   automatically line up a separate microphone with the video — no guessing
   at delay values. (See "Lip sync" below.)
-- **Stream health inside OBS.** A live readout in OBS's own status bar —
-  `LensLink: 60 fps · 11.9 Mb/s · 43 ms` beside OBS's stats — plus a
-  dockable **LensLink** panel (View → Docks) with one row per phone.
+- **Stream health at a glance.** A live readout in OBS's own status bar —
+  `LensLink: iPhone 60 fps · 11.9 Mb/s · 43 ms` beside OBS's stats — plus
+  a dockable **LensLink** panel (View → Docks) with one row per phone.
   Decoded fps, wire bitrate, and measured capture→decode latency, updated
-  every second.
+  every second. On the phone, the gauge button on the Live screen shows
+  the same health line (fps · Mb/s · dropped frames).
 - **Smooth on weak Wi-Fi.** If the connection congests, the app lowers
   quality briefly and recovers, instead of piling up latency.
-- **Battery saver.** While streaming, the phone screen dims after a few
-  seconds; tap to wake it. Optionally, enable **Disconnect when this source
-  isn't shown anywhere** in the source properties and the phone stops
-  streaming entirely whenever the source is hidden, reconnecting when shown.
+- **Battery saver.** While streaming, the phone screen dims after 10
+  seconds; tap to wake it. (Turn this off in the app's **Options**, or dim
+  immediately with the moon button on the Live screen.) Optionally, enable
+  **Disconnect when this source isn't shown anywhere** in the source
+  properties and the phone stops streaming entirely whenever the source is
+  hidden, reconnecting when shown.
 
 ## Remote start
 
 A phone mounted behind a monitor or on a rig shouldn't need to be pulled
-down just to tap **Start**. While LensLink is open and idle, OBS can start
-the camera for you (turn off with the app's **Remote start from OBS**
-option):
+down just to tap a button. While LensLink is open and idle, OBS can start
+the camera for you (turn off with **Remote start from OBS** in the app's
+**Options**):
 
 - **Automatically.** The LensLink Camera source's **"Start the phone's
   camera automatically when it's ready"** option (on by default) starts
@@ -162,7 +170,7 @@ has just become reachable, not after you pressed Stop.
 
 ## Screen mirroring
 
-Add a **LensLink Screen** source in OBS, then tap **Mirror screen to OBS**
+Add a **LensLink Screen** source in OBS, then tap **Start screen broadcast**
 in the app to send your whole iPhone/iPad screen (plus the app's audio). It
 uses iOS's built-in screen broadcast, so it works from any app — pick
 **LensLink Screen** in the broadcast picker and tap **Start Broadcast**.
@@ -198,14 +206,20 @@ Streamers usually use their own microphone, not the phone's. The plugin can
 line that mic up with the video automatically:
 
 1. In the LensLink Camera source properties, pick your microphone under
-   **Lip-sync audio source** and enable **Auto-calibrate**.
-2. In the app, turn on **Auto lip-sync reference**.
+   **Lip-sync audio source**, then enable **Automatically delay that audio
+   source to match the camera latency** and **Auto-calibrate**.
+2. In the app's **Options**, turn on **Auto lip-sync reference**.
 
 The phone then sends its microphone purely as a *timing reference* (never
 heard on stream); the plugin compares it with your real mic to measure the
 exact offset and correct it. If your mic is *slower* than the video (some
 USB audio interfaces are), enable **Auto video delay** and it delays the
 video to match instead.
+
+Prefer a fixed correction? Leave **Auto-calibrate** off and the delay
+checkbox alone shifts your mic by the measured camera latency; if your
+audio device adds its own delay, enter it under **Audio device's own
+latency** and it's subtracted.
 
 ## Latency
 
@@ -214,8 +228,8 @@ or 4K; Wi-Fi is a little higher and more variable. The plugin shows a live
 latency figure in the source's Status field and the OBS log.
 
 A few things already minimize it: GPU-accelerated decoding, low-latency
-decode settings, and dropping (rather than queuing) frames when the link
-stalls. **USB is the most consistent** and immune to Wi-Fi hiccups. For the
+decode settings (both on by default; toggleable in the source properties),
+and dropping (rather than queuing) frames when the link stalls. **USB is the most consistent** and immune to Wi-Fi hiccups. For the
 lowest possible delay, use USB and good lighting (brighter scenes let the
 camera expose faster).
 
@@ -243,6 +257,10 @@ camera expose faster).
   through a Shortcuts automation (`lenslink://start` works everywhere).
   Also make sure the app has been launched once and "Use with Siri" is on
   in Settings → Siri & Search → LensLink.
+- **Screen broadcast won't connect (sideloaded only):** re-signing can
+  silently break the broadcast extension. In the app, open **Screen mirror
+  tools → Check broadcast link** while a broadcast is running — it verifies
+  the extension is alive on-device, independent of OBS.
 - **Two sources, same phone:** one phone can feed one source at a time. A
   second source aimed at the same device will say it's already in use.
   Exception: with **Disconnect when this source isn't shown anywhere**
@@ -256,7 +274,13 @@ camera expose faster).
 
 ## Contributing
 
-Architecture, the wire protocol, and the build/release setup are documented
+Start with [`CONTRIBUTING.md`](CONTRIBUTING.md). Architecture, the wire
+protocol, and the build/release setup are documented
 in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md). Planned improvements and
 recommended future work live in [`docs/ROADMAP.md`](docs/ROADMAP.md);
 performance ground rules in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+
+## License
+
+LensLink is free software, licensed under the
+[GNU GPL version 2 or later](LICENSE) — the same license as OBS Studio.

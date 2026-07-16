@@ -1,0 +1,20 @@
+name: Feature request
+description: An idea that would make LensLink better
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check **[docs/ROADMAP.md](https://github.com/MyNamesEMurray/LensLink/blob/main/docs/ROADMAP.md)** first — it may already be planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation where you'd use it — the streaming setup, what's awkward today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed solution
+      description: How you imagine it working. Rough is fine.
