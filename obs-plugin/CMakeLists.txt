@@ -69,7 +69,9 @@ add_library(${PROJECT_NAME} MODULE
 target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs ${FFMPEG_TARGET})
 
 if(WIN32)
-  target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+  # dxguid: gpu-frame.c references IID_ID3D11Texture2D/IID_IDXGIKeyedMutex,
+  # which are extern GUIDs resolved from this static lib in C builds.
+  target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32 dxguid)
 endif()
 
 if(APPLE)
