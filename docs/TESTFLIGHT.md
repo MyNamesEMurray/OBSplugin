@@ -46,6 +46,16 @@ yourself (internal testing group) and it lands on your phone via the
 TestFlight app immediately — external tester groups need a one-time beta
 review by Apple.
 
+## "What to Test" fills itself in
+
+After each upload, the workflow waits for App Store Connect to register
+the build and writes the latest GitHub release's "What's Changed" notes
+(as plain text) into the build's **What to Test** field — so testers see
+the actual changelog in the TestFlight app without anyone typing it
+twice. The step is non-fatal: if it can't run (build stuck in
+processing, no release yet), the upload still succeeds and the field can
+be filled by hand in App Store Connect.
+
 ## Tester feedback flows into GitHub issues
 
 TestFlight feedback (screenshot feedback and crash reports, including the

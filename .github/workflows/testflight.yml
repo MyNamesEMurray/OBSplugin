@@ -129,6 +129,22 @@ jobs:
             -allowProvisioningUpdates
         working-directory: ios-app
 
+      # Fills the TestFlight "What to Test" box from the latest GitHub
+      # release's "What's Changed" notes. Non-fatal: the build is already
+      # uploaded; worst case the box stays empty and can be set by hand.
+      - name: Set "What to Test" from the release notes
+        continue-on-error: true
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          BUNDLE_ID: com.exaltedpixels.LensLinkCamera
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -m pip install --quiet PyJWT cryptography
+          BUILD_NUMBER=$(( GITHUB_RUN_NUMBER + 1000 )) \
+            python3 .github/scripts/testflight_whats_to_test.py
+
       - name: Clean up API key
         if: always()
         run: rm -f ~/private_keys/AuthKey_*.p8
