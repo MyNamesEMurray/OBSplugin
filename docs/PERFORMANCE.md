@@ -92,11 +92,31 @@ log:
   healthy GPU-pipeline run; nonzero there means the fallback engaged).
 - **OBS process CPU** — sampled the same way OBS's own Stats dock does.
 
-The before/after recipe: same phone, same scene, same
-resolution/fps/codec; stream ≥60 s with the GPU pipeline off, flip it on
-(restart OBS), stream the same ≥60 s, and quote a mid-run line from
-each. Those two lines are the numbers a performance claim in this repo
-should cite.
+While the toggle is on, the plugin also writes one CSV row **per second
+of live video** to `bench-<pipeline>-<epoch>.csv` in its config
+directory (the OBS log prints the exact path when the file opens).
+
+The before/after recipe:
+
+1. Keep your normal settings, enable the benchmark toggle, and stream
+   the scene for ~10 s or more. That's the **before** file.
+2. Flip the GPU pipeline setting, restart OBS, and stream the same
+   phone/scene/resolution for the same length. That's the **after**
+   file.
+3. Run `python3 tools/bench-report.py` in a terminal/command prompt.
+   With no arguments it lists the benchmark files it finds in the
+   plugin's config directory and asks you to pick the before and after
+   runs (or pass the two CSV paths directly).
+4. It prints and writes `lenslink-bench-report.md` (the comparison
+   table — mean/median/p95 per metric with % change) and
+   `lenslink-bench-report.html` (the same plus per-second charts),
+   ready to paste into the repo.
+
+Sanity check built into the report: "pixels crossing system memory"
+must read **0.00** on the GPU-pipeline run — a nonzero value there
+means the automatic CPU fallback engaged and the comparison isn't
+measuring what you think. Those report numbers are what a performance
+claim in this repo should cite.
 
 Any future performance PR should quote at least one of these numbers
 before/after.

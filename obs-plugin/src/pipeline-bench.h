@@ -32,8 +32,18 @@ extern "C" {
 void lenslink_bench_frame(uint64_t cost_ns, size_t bytes_copied,
 			  int width, int height);
 
-/* Rate-limited logger; call from any ~1 Hz maintenance tick. */
+/* Latest capture->decode latency (TIMESYNC-derived), for the CSV rows. */
+void lenslink_bench_latency(int latency_ms);
+
+/* Rate-limited logger + CSV writer; call from any ~1 Hz maintenance
+ * tick. While the setting is on, every second of live video appends a
+ * row to bench-<pipeline>-<epoch>.csv in the plugin config dir (path
+ * logged at open); tools/bench-report.py turns a before/after pair of
+ * those files into a comparison report. */
 void lenslink_bench_maybe_log(void);
+
+/* Closes the sample file; module unload. */
+void lenslink_bench_shutdown(void);
 
 #ifdef __cplusplus
 }

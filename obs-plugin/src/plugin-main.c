@@ -2,6 +2,7 @@
 
 #include "net-compat.h"
 #include "plugin-settings.h"
+#include "pipeline-bench.h"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("lenslink", "en-US")
@@ -56,6 +57,7 @@ void obs_module_unload(void)
 #ifdef LENSLINK_FRONTEND
 	lenslink_frontend_shutdown();
 #endif
+	lenslink_bench_shutdown();
 	lenslink_settings_shutdown();
 	net_shutdown();
 }
