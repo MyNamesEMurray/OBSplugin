@@ -15,6 +15,13 @@ MODULE_EXPORT const char *obs_module_description(void)
 extern struct obs_source_info ios_camera_source_info;
 extern struct obs_source_info lenslink_screen_source_info;
 
+#ifdef LENSLINK_FRONTEND
+/* frontend-ui.cpp — status-bar readout and dock. Compiled in only when
+ * Qt6 is available; degrades to nothing at runtime in frontend-less OBS. */
+extern void lenslink_frontend_init(void);
+extern void lenslink_frontend_shutdown(void);
+#endif
+
 bool obs_module_load(void)
 {
 	if (!net_init()) {
@@ -24,11 +31,17 @@ bool obs_module_load(void)
 
 	obs_register_source(&ios_camera_source_info);
 	obs_register_source(&lenslink_screen_source_info);
+#ifdef LENSLINK_FRONTEND
+	lenslink_frontend_init();
+#endif
 	blog(LOG_INFO, "[lenslink] plugin loaded");
 	return true;
 }
 
 void obs_module_unload(void)
 {
+#ifdef LENSLINK_FRONTEND
+	lenslink_frontend_shutdown();
+#endif
 	net_shutdown();
 }

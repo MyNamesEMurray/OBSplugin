@@ -4,10 +4,14 @@ name: Build
 # PR built the identical code), and the release workflow rebuilds + ships
 # the artifacts — so building again on the main push would be pure waste.
 #
-# Docs-only PRs skip the builds: a cheap `changes` job diffs the PR and the
-# build jobs are if-gated on it. (A `paths:` filter would be simpler but
-# breaks required checks — the workflow never runs, so the checks sit
-# "expected" forever and the PR can't merge. Skipped jobs count as passing.)
+# PRs build only what they touch: a cheap `changes` job diffs the PR and
+# the build jobs are if-gated per area — plugin-only PRs skip the iOS
+# build, app-only PRs skip the three plugin builds, docs-only PRs skip
+# everything. The plugin and the app share no build inputs (only the wire
+# protocol spec in docs/), so the split is safe. (A `paths:` filter would
+# be simpler but breaks required checks — the workflow never runs, so the
+# checks sit "expected" forever and the PR can't merge. Skipped jobs count
+# as passing.)
 on:
   pull_request:
   workflow_dispatch:
@@ -17,7 +21,8 @@ jobs:
     name: Detect changed areas
     runs-on: ubuntu-latest
     outputs:
-      code: ${{ steps.diff.outputs.code }}
+      plugin: ${{ steps.diff.outputs.plugin }}
+      ios: ${{ steps.diff.outputs.ios }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,20 +32,30 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || '' }}
         run: |
           if [ -z "$BASE" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"   # workflow_dispatch: build everything
+            # workflow_dispatch: build everything
+            echo "plugin=true" >> "$GITHUB_OUTPUT"
+            echo "ios=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git fetch --depth=1 origin "$BASE"
-          if git diff --name-only "$BASE" HEAD | \
-             grep -qE '^(obs-plugin/|ios-app/|installer/|\.github/workflows/build\.yml)'; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          # A workflow edit rebuilds everything: it may change any job.
+          if echo "$CHANGED" | \
+             grep -qE '^(obs-plugin/|installer/|\.github/workflows/build\.yml)'; then
+            echo "plugin=true" >> "$GITHUB_OUTPUT"
           else
-            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "plugin=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$CHANGED" | \
+             grep -qE '^(ios-app/|\.github/workflows/build\.yml)'; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios=false" >> "$GITHUB_OUTPUT"
           fi
   obs-plugin-linux:
     name: OBS plugin (Linux)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.plugin == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +63,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libobs-dev \
+          sudo apt-get install -y cmake pkg-config libobs-dev qt6-base-dev \
             libavcodec-dev libavutil-dev
 
       - name: Configure
@@ -70,7 +85,7 @@ jobs:
   obs-plugin-windows:
     name: OBS plugin (Windows)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.plugin == 'true'
     runs-on: windows-2022
     env:
       # Keep in sync with the OBS release users run: the plugin links the
@@ -91,10 +106,16 @@ jobs:
           ref: ${{ env.OBS_REF }}
           path: obs-studio
 
-      - name: Download OBS prebuilt dependencies (FFmpeg)
+      - name: Download OBS prebuilt dependencies (FFmpeg, Qt6)
         run: |
           curl -L -o deps.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-${{ env.DEPS_TAG }}-x64.zip"
           7z x deps.zip -oobs-deps
+          # Qt6 (same bundle OBS itself builds with): needed only for the
+          # plugin's status-bar/dock UI. The plugin links Qt but resolves
+          # obs-frontend-api symbols at runtime, so libobs alone still
+          # suffices for the rest of the build.
+          curl -L -o deps-qt6.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-qt6-${{ env.DEPS_TAG }}-x64.zip"
+          7z x -y deps-qt6.zip -oobs-deps
 
       - name: Cache libobs build
         id: cache-libobs
@@ -117,8 +138,10 @@ jobs:
       - name: Build plugin
         run: |
           cmake -S obs-plugin -B plugin-build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
             -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config;${{ github.workspace }}\obs-studio\deps\w32-pthreads" `
             -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib;${{ github.workspace }}\obs-build\deps\w32-pthreads\Release\w32-pthreads.lib" `
+            -DOBS_FRONTEND_API_HINT="${{ github.workspace }}\obs-studio\frontend\api;${{ github.workspace }}\obs-studio\UI\obs-frontend-api" `
             -DFFMPEG_INCLUDE_DIR="${{ github.workspace }}\obs-deps\include" `
             -DAVCODEC_LIBRARY="${{ github.workspace }}\obs-deps\lib\avcodec.lib" `
             -DAVUTIL_LIBRARY="${{ github.workspace }}\obs-deps\lib\avutil.lib"
@@ -151,7 +174,7 @@ jobs:
   obs-plugin-macos:
     name: OBS plugin (macOS)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.plugin == 'true'
     runs-on: macos-15
     env:
       # Keep in sync with the OBS release users run (same pins as the
@@ -172,11 +195,14 @@ jobs:
           ref: ${{ env.OBS_REF }}
           path: obs-studio
 
-      - name: Download OBS prebuilt dependencies (FFmpeg)
+      - name: Download OBS prebuilt dependencies (FFmpeg, Qt6)
         run: |
           curl -L -o deps.tar.xz "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/macos-deps-${{ env.DEPS_TAG }}-universal.tar.xz"
           mkdir obs-deps
           tar -xJf deps.tar.xz -C obs-deps
+          # Qt6 for the status-bar/dock UI (see the Windows job note).
+          curl -L -o deps-qt6.tar.xz "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/macos-deps-qt6-${{ env.DEPS_TAG }}-universal.tar.xz"
+          tar -xJf deps-qt6.tar.xz -C obs-deps
 
       # "macos" in the key: cache keys are not runner-scoped, and the
       # Windows job already uses libobs-<ref>-<tag> for its MSVC build.
@@ -213,6 +239,8 @@ jobs:
             -DCMAKE_C_FLAGS="-Wall -Wextra -Werror" \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -DOBS_FRONTEND_API_HINT="$PWD/obs-studio/frontend/api;$PWD/obs-studio/UI/obs-frontend-api" \
             -DLIBOBS_INCLUDE_DIR="$PWD/obs-studio/libobs;$PWD/obs-build/config" \
             -DLIBOBS_LIBRARY="$PWD/obs-build/libobs/Release/libobs.framework" \
             -DFFMPEG_INCLUDE_DIR="$PWD/obs-deps/include" \
@@ -261,7 +289,7 @@ jobs:
   ios-app:
     name: iOS app (LensLink)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.ios == 'true'
     # Needs Xcode 16+: current XcodeGen emits project format 77, which
     # Xcode 15 (macos-14 runners) cannot open.
     runs-on: macos-15
