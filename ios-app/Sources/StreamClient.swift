@@ -13,6 +13,12 @@ final class StreamClient {
     }
 
     var onStateChange: ((State) -> Void)?
+    /// Whether the live listener is advertising itself over Bonjour
+    /// (nil = no listener). false means iOS denied the advertise (Local
+    /// Network permission) and the listener fell back to plain TCP — the
+    /// UI uses this to point at the Settings toggle instead of leaving
+    /// "phone missing from the OBS dropdown" a mystery.
+    var onDiscoveryChange: ((Bool?) -> Void)?
     /// Remote camera-control command (JSON) received from the plugin.
     var onControl: ((Data) -> Void)?
     /// A video frame was dropped: the reference chain is broken and the
@@ -68,6 +74,7 @@ final class StreamClient {
             // listener the caller just asked to stop.
             self.listenGeneration += 1
             self.state = .disconnected
+            self.onDiscoveryChange?(nil)
         }
     }
 
@@ -219,6 +226,7 @@ final class StreamClient {
             self.listenerStateDescription = "\(newState)"
             if case .ready = newState {
                 self.bindRetries = 0
+                self.onDiscoveryChange?(advertise)
             }
             if case .failed(let error) = newState {
                 // Bonjour advertising is denied when Local Network

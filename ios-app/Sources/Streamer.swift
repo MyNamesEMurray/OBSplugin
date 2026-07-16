@@ -271,6 +271,11 @@ final class Streamer: ObservableObject {
         }
     }
     @Published var micPermissionDenied = false
+    /// Whether the listener is advertising over Bonjour (nil = not
+    /// listening). false = iOS denied Local Network permission and the
+    /// app fell back to a plain listener — the Connect screen points at
+    /// the Settings toggle so the OBS dropdown's silence is explained.
+    @Published private(set) var discoverable: Bool?
 
     // Live camera controls (also driven remotely via CONTROL packets)
     @Published var zoom: CGFloat = 1 {
@@ -559,6 +564,11 @@ final class Streamer: ObservableObject {
         client.onStateChange = { [weak self] state in
             Task { @MainActor [weak self] in
                 self?.handleClientState(state)
+            }
+        }
+        client.onDiscoveryChange = { [weak self] discoverable in
+            Task { @MainActor [weak self] in
+                self?.discoverable = discoverable
             }
         }
         client.onControl = { [weak self] json in
