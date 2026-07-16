@@ -23,6 +23,10 @@
 #include "usbmux.h"
 #include "web-control.h"
 #include "lipsync.h"
+#include "mdns.h"
+
+/* Bonjour service the app advertises while its listener is up. */
+#define LENSLINK_MDNS_SERVICE "_lenslink._tcp.local"
 
 #define WEB_CONTROL_PORT 9980
 
@@ -1989,7 +1993,20 @@ static obs_properties_t *build_properties(struct ios_camera_source *s,
 	obs_property_list_add_string(mode, T_("Mode.USB"), MODE_USB);
 	obs_property_set_modified_callback(mode, mode_modified);
 
-	obs_properties_add_text(props, S_HOST, T_("Host"), OBS_TEXT_DEFAULT);
+	/* Editable combo: type an IP as before, or pick a phone found via
+	 * Bonjour. The short blocking browse only runs when the properties
+	 * sheet opens — same pattern as the USB device scan below. */
+	obs_property_t *host = obs_properties_add_list(
+		props, S_HOST, T_("Host"), OBS_COMBO_TYPE_EDITABLE,
+		OBS_COMBO_FORMAT_STRING);
+	struct mdns_result phones[8];
+	int found = mdns_browse(LENSLINK_MDNS_SERVICE, 500, phones, 8);
+	for (int i = 0; i < found; i++) {
+		char label[144];
+		snprintf(label, sizeof(label), "%.63s (%.63s)", phones[i].name,
+			 phones[i].host);
+		obs_property_list_add_string(host, label, phones[i].host);
+	}
 
 	obs_property_t *usb_dev = obs_properties_add_list(
 		props, S_USB_DEVICE, T_("UsbDevice"), OBS_COMBO_TYPE_LIST,

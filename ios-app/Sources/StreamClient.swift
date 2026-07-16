@@ -164,6 +164,12 @@ final class StreamClient {
             return
         }
 
+        // Advertise over Bonjour so the OBS plugin can discover this
+        // phone by name instead of a typed IP. The device name matches
+        // the HELLO; port comes from the service record's socket.
+        listener.service = NWListener.Service(
+            name: UIDevice.current.name, type: "_lenslink._tcp")
+
         self.listener = listener
         state = .connecting
 

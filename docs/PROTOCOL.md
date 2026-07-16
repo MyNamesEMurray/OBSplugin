@@ -189,6 +189,19 @@ connection state). The plugin echoes it into the OBS log (prefixed
 so both ends of the pipeline appear together — the broadcast extension has
 no console of its own. Purely informational; a receiver may ignore it.
 
+## Discovery (Bonjour)
+
+Whenever the app's listener is up (streaming, standby, or a screen
+broadcast), it is advertised over Bonjour as **`_lenslink._tcp`** with the
+device's name as the service instance. The plugin performs a one-shot
+mDNS-SD browse (RFC 6762 §5.1: PTR query from an ephemeral port with the
+unicast-response bit, answers arrive unicast) when the source's
+properties open, and offers discovered phones by name in the Phone
+field. Only the PTR answer's instance label and the responder's source
+address are used — the wire port is fixed — so no SRV/A parsing or
+multicast group membership is required. Typing an IP directly still
+works exactly as before.
+
 ## USB transport
 
 The packet protocol is identical over USB. The plugin reaches the app's
