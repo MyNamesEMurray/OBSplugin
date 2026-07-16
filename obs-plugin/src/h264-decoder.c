@@ -125,7 +125,20 @@ struct h264_decoder *h264_decoder_create(enum AVCodecID codec_id,
 		goto fail;
 
 	dec->ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
-	dec->ctx->flags2 |= AV_CODEC_FLAG2_CHUNKS;
+	/* No CHUNKS flag: every packet is a complete access unit (the wire
+	 * protocol guarantees it). CHUNKS told the decoder input could be
+	 * truncated mid-frame, deferring frame completion until the next
+	 * packet — wrong for this stream and free latency.
+	 *
+	 * Hardware caps handling: drivers refuse streams whose SPS
+	 * advertises a profile/level outside their declared support even
+	 * when they can decode them — VideoToolbox writes its own level
+	 * choices, and the observed symptom is D3D11VA/DXVA2 accepting
+	 * every packet while emitting no frames. Let FFmpeg attempt the
+	 * hardware path anyway; a real failure still errors or trips the
+	 * no-output watchdog and falls onward. */
+	dec->ctx->hwaccel_flags |= AV_HWACCEL_FLAG_IGNORE_LEVEL |
+				   AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
 	/* Frame threading buffers one input frame per thread before any
 	 * output appears — pure added latency for a live stream. The
 	 * encoder sends single-slice frames, so decode single-threaded. */
