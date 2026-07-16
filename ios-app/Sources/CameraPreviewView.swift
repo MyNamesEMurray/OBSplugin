@@ -31,6 +31,42 @@ struct CameraPreviewView: UIViewRepresentable {
     final class PreviewView: UIView {
         override static var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+        /// The camera's session queue (same lock discipline as attach —
+        /// see the `sessionQueue` note on CameraPreviewView).
+        var sessionQueue: DispatchQueue?
+
+        // Rotation reaches a view as a re-layout, so this is the hook that
+        // keeps the preview fullscreen through every UI orientation.
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            syncPreviewOrientation()
+        }
+
+        /// Keeps the preview upright in whatever orientation the UI is in.
+        /// The preview layer's connection orientation is independent of the
+        /// capture output's: the *stream* stays sensor-native landscape,
+        /// while the *preview* renders for the screen the user is holding —
+        /// rotate the phone and the live view stays fullscreen and upright
+        /// instead of going sideways.
+        func syncPreviewOrientation() {
+            guard let scene = window?.windowScene else { return }
+            let video: AVCaptureVideoOrientation
+            switch scene.interfaceOrientation {
+            case .portrait: video = .portrait
+            case .portraitUpsideDown: video = .portraitUpsideDown
+            case .landscapeLeft: video = .landscapeLeft
+            case .landscapeRight: video = .landscapeRight
+            default: return
+            }
+            let layer = previewLayer
+            sessionQueue?.async {
+                if let connection = layer.connection,
+                   connection.isVideoOrientationSupported,
+                   connection.videoOrientation != video {
+                    connection.videoOrientation = video
+                }
+            }
+        }
     }
 
     final class Coordinator: NSObject {
@@ -68,6 +104,7 @@ struct CameraPreviewView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
+        view.sessionQueue = sessionQueue
         let layer = view.previewLayer
         layer.videoGravity = videoGravity
         // Off-main attach (see `sessionQueue` note). The preview stays
@@ -76,6 +113,14 @@ struct CameraPreviewView: UIViewRepresentable {
         let session = session
         sessionQueue.async {
             layer.session = session
+        }
+        // The attach above creates the connection after any layout has
+        // already run; sync once behind it so the first frame renders in
+        // the current UI orientation (main hop: windowScene is UI state).
+        sessionQueue.async {
+            DispatchQueue.main.async { [weak view] in
+                view?.syncPreviewOrientation()
+            }
         }
 
         if onTapAtDevicePoint != nil {
