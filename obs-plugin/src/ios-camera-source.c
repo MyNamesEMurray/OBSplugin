@@ -1080,6 +1080,29 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 			h264_decoder_destroy(c->decoder);
 			c->decoder = NULL;
 			c->codec_id = id;
+			/* A codec switch starts a NEW decode stream, so the
+			 * failover machinery must re-arm with it. The silent
+			 * no-output watchdog only fires while frames_output
+			 * is 0 — a stale count from the previous codec kept
+			 * it disarmed, so a hardware decoder that accepted
+			 * packets but emitted nothing froze the source
+			 * forever (works on a fresh connection, froze on a
+			 * mid-stream HEVC→H.264 switch). hw_failed resets
+			 * too: it described the OLD codec's hardware path;
+			 * the new codec deserves its own hardware attempt,
+			 * with the watchdog and the error path both armed to
+			 * catch it. */
+			c->video_packets = 0;
+			c->video_bytes = 0;
+			c->keyframes_seen = 0;
+			c->frames_output = 0;
+			c->decode_errors = 0;
+			c->first_frame_ns = 0;
+			c->no_output_warned = false;
+			c->hw_failed = false;
+			c->next_decoder_attempt = 0;
+			/* Diagnostics measure per decode-stream from here. */
+			c->connected_ns = os_gettime_ns();
 		}
 		break;
 	}
