@@ -22,6 +22,9 @@ void ios_camera_copy_state(struct ios_camera_source *s, char *buf,
 			   size_t size);
 bool ios_camera_is_screen(struct ios_camera_source *s);
 bool ios_camera_is_standby(struct ios_camera_source *s);
+bool ios_camera_is_connected(struct ios_camera_source *s);
+bool ios_camera_auto_start(struct ios_camera_source *s);
+void ios_camera_set_auto_start(struct ios_camera_source *s, bool on);
 
 struct web_control *web_control_start(struct ios_camera_source *source,
 				      uint16_t port);
