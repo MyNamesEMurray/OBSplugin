@@ -32,7 +32,8 @@ In Xcode:
 1. Select the **LensLink** target → *Signing & Capabilities* → pick your team
    (or set `DEVELOPMENT_TEAM` in `project.yml` before generating).
 2. Optionally change the bundle identifier prefix in `project.yml`
-   (`com.example` by default).
+   (`com.exaltedpixels` by default — you'll need your own prefix, since
+   that one is registered to the project's Apple account).
 3. Select your device and **Run**.
 
 On first launch iOS will ask for **camera** and **local network** permission —
@@ -40,9 +41,15 @@ both are required.
 
 ## Notes
 
+- **No Mac handy?** `ios-app/syntax-check.sh` parse-checks every Swift
+  source on Linux (it installs a Swift toolchain on first run). Syntax
+  only — SwiftUI/UIKit don't exist outside Xcode, so the full compile
+  still needs macOS (CI does it on every pull request).
 - The app stops streaming when backgrounded (iOS suspends camera capture);
   keep it in the foreground while live. The screen is kept awake
   automatically while streaming.
-- Discovery uses a UDP broadcast on port 9978. If your network blocks
-  broadcasts (some corporate/guest Wi-Fi), enter the computer's IP manually —
-  OBS shows it under Settings, or run `ipconfig` / `ip addr` on the computer.
+- Discovery works via Bonjour/mDNS: the app advertises `_lenslink._tcp`
+  on its TCP listener (port 9979) and the plugin's Phone dropdown browses
+  for it. If your network blocks mDNS (some corporate/guest Wi-Fi), enter
+  the phone's IP — shown on the app's main screen — into the source's
+  Phone field manually.

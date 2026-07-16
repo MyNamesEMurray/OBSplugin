@@ -1,0 +1,55 @@
+name: Bug report
+description: A stream won't start, video/audio is wrong, something crashes…
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please skim **[Tips & troubleshooting](https://github.com/MyNamesEMurray/LensLink#tips--troubleshooting)** first — several common problems (old plugin copies, sideload expiry, Siri quirks) have known fixes.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Where does the problem show?
+      options:
+        - In OBS (computer side)
+        - In the app (phone side)
+        - Both / not sure
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: LensLink version (bottom of the app's main screen), OBS version, computer OS, phone model + iOS version.
+      placeholder: "LensLink 1.0 (1031), OBS 32.1, Windows 11, iPhone 14 / iOS 18.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options:
+        - Wi-Fi
+        - USB cable
+        - Both / not sure
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is the app installed?
+      options:
+        - TestFlight
+        - Sideloaded
+        - Built from source
+  - type: textarea
+    id: log
+    attributes:
+      label: OBS log
+      description: |
+        OBS → **Help → Log Files → Upload Current Log File**, and paste the URL here. If a stream won't start, first enable **"Verbose diagnostics in the OBS log"** in the LensLink source's properties, reproduce the problem, then upload — the diagnostics pinpoint the failing stage (see [docs/DEBUGGING-SCREEN-MIRROR.md](https://github.com/MyNamesEMurray/LensLink/blob/main/docs/DEBUGGING-SCREEN-MIRROR.md)).

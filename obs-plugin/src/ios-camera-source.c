@@ -2571,9 +2571,9 @@ static obs_properties_t *lenslink_screen_get_properties(void *data)
 /* Two registered source types share this whole engine; instances only
  * differ by `is_screen_source` (set from the id at create). The camera id
  * predates the split and must never change — it's baked into users' scene
- * collections. A camera source still *plays* a screen stream if the phone
- * sends one (and vice versa), so pre-split setups keep working; the status
- * line just nudges toward the matching type. */
+ * collections. Each type accepts only its own stream kind: the HELLO
+ * handler rejects a mismatched stream (wrong_kind) and the status line
+ * says which source type to use instead. */
 
 /* ------------------------------------------------------------------ */
 /* GPU (beta) pipeline: sync-source rendering                          */

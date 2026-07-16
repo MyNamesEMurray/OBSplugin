@@ -15,6 +15,10 @@ struct ContentView: View {
     @AppStorage("showConnectionHelp") private var showConnectionHelp = true
     @AppStorage("showMirrorTools") private var showMirrorTools = false
 
+    // The behaviour toggles live in a sheet (OptionsView) so the main
+    // screen stays short — see that file for why.
+    @State private var showOptions = false
+
     var body: some View {
         if streamer.isStreaming {
             StreamingView()
@@ -25,19 +29,22 @@ struct ContentView: View {
 
     // The form is three parallel modules — Connect, Camera, Screen mirror —
     // each saying which OBS source it talks to and ending in the same
-    // full-width action button, plus small Options/About tails. The banner
-    // is the title (no NavigationView: nothing is ever pushed, and the
-    // wordmark replaces the large-title text).
+    // full-width action button, plus a two-row tail (Options sheet +
+    // GitHub/version). The banner is the title (no NavigationView: nothing
+    // is ever pushed, and the wordmark replaces the large-title text).
     private var settingsForm: some View {
         Form {
             bannerHeader
             connectSection
             cameraSection
             screenMirrorSection
-            optionsSection
-            aboutSection
+            tailSection
         }
         .tint(Theme.accent)
+        .sheet(isPresented: $showOptions) {
+            OptionsView()
+                .environmentObject(streamer)
+        }
         .onAppear {
             wifiIP = NetworkInfo.wifiIPAddress()
             refreshCapabilities()
@@ -267,28 +274,36 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Options / About
+    // MARK: - Tail (Options / About)
 
-    private var optionsSection: some View {
-        // Section has no (title-string + footer-closure) initializer; the
-        // header must be a closure too.
+    /// Two compact rows close the form: the Options sheet (remote start,
+    /// dim, mic toggles — each explained in place there, not in a footer
+    /// here) and the GitHub link. TestFlight testers otherwise have no
+    /// pointer to the plugin/docs/issues; the version line gives bug
+    /// reports a build to cite.
+    private var tailSection: some View {
         Section {
-            Toggle("Remote start from OBS", isOn: $streamer.remoteStartEnabled)
-            Toggle("Dim screen while streaming", isOn: $streamer.dimWhileStreaming)
-            Toggle("Send phone mic to OBS", isOn: $streamer.sendMicAudio)
-            Toggle("Auto lip-sync reference", isOn: $streamer.sendAudioReference)
-        } header: {
-            Text("Options")
-        } footer: {
-            Text("Remote start: while LensLink is open, OBS can start the camera for you — automatically when its source connects, or from the source's \"Start camera on the phone\" button. Siri works too: \"Start streaming with LensLink.\" Dim: the screen dims after 10 seconds of streaming; tap to wake. Phone mic: streams this phone's microphone as the camera source's audio in OBS — a wireless mic. Lip-sync: sends the phone mic purely as a timing reference so the plugin can auto-align your real microphone — never streamed or heard. The mic toggles are either/or: one mic, one role.")
-        }
-    }
-
-    /// The OBS plugin, docs, and issue tracker all live on GitHub —
-    /// TestFlight testers otherwise have no pointer to them. The version
-    /// line gives bug reports a build to cite.
-    private var aboutSection: some View {
-        Section {
+            Button {
+                showOptions = true
+            } label: {
+                HStack {
+                    Label {
+                        Text("Options")
+                    } icon: {
+                        Image(systemName: "gearshape")
+                            .foregroundColor(Theme.accent)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Link(destination: Self.reportProblemURL) {
+                Label("Report a problem", systemImage: "ladybug")
+            }
             Link(destination: URL(string: "https://github.com/MyNamesEMurray/LensLink")!) {
                 Label("LensLink on GitHub", systemImage: "link")
             }
@@ -296,6 +311,33 @@ struct ContentView: View {
             Text("OBS plugin downloads, guides, and bug reports. \(Self.versionLine)")
         }
     }
+
+    /// The GitHub bug-report form with the phone-side facts prefilled
+    /// through the form's field ids (template query parameters) — testers
+    /// shouldn't have to transcribe build numbers and device names.
+    private static let reportProblemURL: URL = {
+        var sys = utsname()
+        uname(&sys)
+        let model = withUnsafePointer(to: &sys.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(validatingUTF8: $0) ?? "unknown"
+            }
+        }
+        var url = URLComponents(
+            string: "https://github.com/MyNamesEMurray/LensLink/issues/new")!
+        var items = [
+            URLQueryItem(name: "template", value: "bug-report.yml"),
+            URLQueryItem(name: "versions", value:
+                "\(versionLine), \(model), iOS \(UIDevice.current.systemVersion)"),
+        ]
+        // TestFlight builds carry a sandbox receipt; prefill the install
+        // dropdown so reports say which distribution they came from.
+        if Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" {
+            items.append(URLQueryItem(name: "install", value: "TestFlight"))
+        }
+        url.queryItems = items
+        return url.url!
+    }()
 
     private static let versionLine: String = {
         let info = Bundle.main.infoDictionary

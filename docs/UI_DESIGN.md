@@ -138,19 +138,36 @@ surfaces.
 ## 6. Screen specifications
 
 ### 6.1 App — Setup screen
-Grouped form, top to bottom:
+Grouped form, top to bottom — parallel modules, each naming the OBS source
+it feeds and ending in the same full-width accent action button:
 
-1. **Status** — dot (`status.tint`) + `status.displayName`.
-2. **How to connect** — the phone's Wi-Fi IP in large monospaced text
-   (tap-to-copy), one line telling the operator to enter it in OBS, and a
-   note that a USB cable also works.
+1. **Banner** — the wordmark as the screen's title (no navigation bar;
+   nothing is ever pushed).
+2. **Connect** — status dot (`status.tint`) + `status.displayName` with
+   the phone's Wi-Fi IP on the same line (monospaced, tap-to-copy), and a
+   "How to connect" disclosure with the two setup steps — collapsible, and
+   it stays collapsed once read.
 3. **Camera** — Lens, Resolution, Frame rate, Codec pickers (each filtered
-   to what the selected lens supports).
-4. **Options** — Remote-start and Dim-screen toggles.
-5. **Lip sync** — Auto lip-sync reference toggle + explanation.
-6. **Action** — a single filled **accent** "Start streaming to OBS" button;
-   a contextual "Open Settings" button appears only if a permission was
+   to what the selected lens supports), then **Start camera stream**. A
+   contextual "Open Settings" button appears only if a permission was
    denied.
+4. **Screen mirror** — a "Screen mirror tools" diagnostics disclosure,
+   then **Start screen broadcast** (the system broadcast picker is
+   stretched invisibly over our button face — iOS won't start a broadcast
+   any other way).
+5. **Tail** — an **Options** row that presents the Options sheet, the
+   GitHub link, and the version line in the footer.
+
+Long explanations don't belong on this screen: each module's footer is at
+most a sentence or two, so the form stays close to one screenful.
+
+**Options sheet.** The behaviour toggles live in a sheet (`OptionsView`)
+so the main screen stays short: **Remote start from OBS**, **Dim screen
+while streaming**, and a **Microphone** group (**Send phone mic to OBS** /
+**Auto lip-sync reference** — mutually exclusive; turning one on turns the
+other off). Each toggle sits in its own section with a short footer
+directly beneath it — never one combined wall-of-text footer for all of
+them.
 
 ### 6.2 App — Live screen
 Full-screen black; camera preview `resizeAspect`; content over it:
@@ -190,7 +207,8 @@ identical pill, palette and control language.
 
 A third surface lives inside OBS itself (Qt, `frontend-ui.cpp`): a
 one-line health readout in the main window's status bar
-(`LensLink: 60 fps · 11.9 Mb/s · 43 ms`, hidden when nothing is
+(`LensLink: <device> 60 fps · 11.9 Mb/s · 43 ms`, live sources joined by
+`  |  `, hidden when nothing is
 connected; "ready (camera idle)" during standby) and a dockable
 **LensLink** panel listing every source with its device, status, and
 rates. These render with OBS's native theme rather than our palette —

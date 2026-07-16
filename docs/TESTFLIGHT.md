@@ -46,6 +46,27 @@ yourself (internal testing group) and it lands on your phone via the
 TestFlight app immediately — external tester groups need a one-time beta
 review by Apple.
 
+## Tester feedback flows into GitHub issues
+
+TestFlight feedback (screenshot feedback and crash reports, including the
+tester's comment) normally sits in App Store Connect where nobody looks.
+The [`TestFlight Feedback` workflow](../.github/workflows/testflight-feedback.yml)
+polls Apple's Feedback API every 6 hours and opens one GitHub issue per
+submission, labelled `testflight` — device, iOS version, build, comment,
+and (for crashes) the crash log inline. It reuses the same secrets as the
+upload workflow, so once TestFlight is set up there is nothing extra to
+configure. Mirroring is idempotent (each submission id is only filed
+once), and tester emails are deliberately kept out of the public issues.
+
+Two ways testers reach us, both structured:
+
+- **TestFlight-native** (zero friction): screenshot → *Share Beta
+  Feedback*, or the crash dialog. Lands on GitHub via the bridge above.
+- **In-app "Report a problem"** (bottom of the main screen): opens the
+  GitHub bug-report form with the app version, build, device model, iOS
+  version, and install method already filled in via the form's query
+  parameters. Requires a GitHub account, but arrives complete.
+
 ## Why this also matters for the screen-mirror extension
 
 Broadcast upload extensions are sensitive to how the app was signed:
