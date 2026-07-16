@@ -147,7 +147,9 @@ struct ios_camera_source {
 
 	/* Health mirrors for the frontend UI (the live counters belong to
 	 * the dial thread's client_state; these are 1 Hz copies). Guarded
-	 * by status_mutex. */
+	 * by status_mutex. stat_connected doubles as the web panel's
+	 * "live controls make sense" signal (set at HELLO, cleared on
+	 * disconnect; the 1 Hz tick re-asserts it). */
 	bool stat_connected;
 	uint64_t stat_frames;
 	uint64_t stat_bytes;
@@ -245,6 +247,31 @@ size_t lenslink_health_enum(struct lenslink_health *out, size_t max)
 	}
 	pthread_mutex_unlock(&g_health_mutex);
 	return n;
+}
+
+bool ios_camera_is_connected(struct ios_camera_source *s)
+{
+	pthread_mutex_lock(&s->status_mutex);
+	bool v = s->stat_connected;
+	pthread_mutex_unlock(&s->status_mutex);
+	return v;
+}
+
+bool ios_camera_auto_start(struct ios_camera_source *s)
+{
+	return s->auto_start;
+}
+
+/* Web-panel toggle for the auto-start property: persist it through the
+ * source's settings so the properties checkbox and the panel stay one
+ * value. obs_source_update is safe from the web thread; our update()
+ * only restarts the dial thread when connection settings change. */
+void ios_camera_set_auto_start(struct ios_camera_source *s, bool on)
+{
+	obs_data_t *settings = obs_source_get_settings(s->source);
+	obs_data_set_bool(settings, S_AUTO_START, on);
+	obs_source_update(s->source, settings);
+	obs_data_release(settings);
 }
 
 /* PINs travel inside JSON we build with snprintf; restrict them to
@@ -1152,6 +1179,7 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 		pthread_mutex_lock(&s->status_mutex);
 		s->is_screen = c->is_screen;
 		s->standby = c->standby;
+		s->stat_connected = true;
 		pthread_mutex_unlock(&s->status_mutex);
 		blog(LOG_INFO, "[lenslink] client connected: %s (%s%s)",
 		     c->name[0] ? c->name : "(unnamed)",
@@ -2186,9 +2214,9 @@ static void fill_usb_devices(obs_property_t *list, const char *current)
 	}
 }
 
-/* Remote start: queue a start_stream command for the connected (standby)
- * app. Queued like any web-panel control, so it rides the existing
- * control channel and is a no-op when nothing is connected. */
+/* Remote start/stop: queue the command for the connected app. Queued like
+ * any web-panel control, so it rides the existing control channel and is
+ * a no-op when nothing is connected. */
 static bool start_camera_clicked(obs_properties_t *props,
 				 obs_property_t *property, void *data)
 {
@@ -2196,6 +2224,19 @@ static bool start_camera_clicked(obs_properties_t *props,
 	UNUSED_PARAMETER(property);
 	struct ios_camera_source *s = data;
 	static const char json[] = "{\"cmd\":\"start_stream\"}";
+
+	if (s)
+		ios_camera_enqueue_control(s, json, sizeof(json) - 1);
+	return false;
+}
+
+static bool stop_camera_clicked(obs_properties_t *props,
+				obs_property_t *property, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	struct ios_camera_source *s = data;
+	static const char json[] = "{\"cmd\":\"stop_stream\"}";
 
 	if (s)
 		ios_camera_enqueue_control(s, json, sizeof(json) - 1);
@@ -2273,6 +2314,9 @@ static obs_properties_t *build_properties(struct ios_camera_source *s,
 		obs_properties_add_button(props, "start_camera",
 					  T_("StartCamera"),
 					  start_camera_clicked);
+		obs_properties_add_button(props, "stop_camera",
+					  T_("StopCamera"),
+					  stop_camera_clicked);
 
 		/* Pairing (only meaningful when the app has "Require
 		 * pairing" on — the status line says when to use these). */

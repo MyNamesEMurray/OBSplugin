@@ -35,28 +35,37 @@ struct StopCameraStreamIntent: AppIntent {
 }
 
 /// Pre-registered Siri phrases — no Shortcuts setup required.
-/// (The shortTitle/systemImageName initializer is 16.4+; on 16.0–16.3 the
-/// intents are still available as actions in the Shortcuts app.)
-@available(iOS 16.4, *)
+///
+/// Deliberately the iOS 16.0 `AppShortcut(intent:phrases:)` initializer,
+/// not the 16.4+ one with shortTitle/systemImageName: gating the provider
+/// at 16.4 left a 16.0–16.3 dead zone where no phrases existed at all,
+/// and the phrases matter more than the Spotlight tile cosmetics. The
+/// deprecation warning is accepted for the wider floor.
+///
+/// Note: Siri phrases only register when the app keeps its real bundle
+/// ID. Sideloading tools that re-sign under a personal team rewrite the
+/// bundle ID, which orphans the compiled phrase model — the intents still
+/// work from the Shortcuts app, but "Hey Siri…" won't match. TestFlight
+/// and App Store installs are unaffected (see README troubleshooting).
+@available(iOS 16.0, *)
 struct LensLinkShortcuts: AppShortcutsProvider {
+    @available(iOS, deprecated: 16.4) // silence just the init deprecation
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: StartCameraStreamIntent(),
             phrases: [
                 "Start streaming with \(.applicationName)",
                 "Start the \(.applicationName) camera",
+                "Start streaming to OBS with \(.applicationName)",
                 "Start \(.applicationName)",
-            ],
-            shortTitle: "Start Camera",
-            systemImageName: "video.fill")
+            ])
         AppShortcut(
             intent: StopCameraStreamIntent(),
             phrases: [
                 "Stop streaming with \(.applicationName)",
                 "Stop the \(.applicationName) camera",
-            ],
-            shortTitle: "Stop Camera",
-            systemImageName: "stop.fill")
+                "Stop \(.applicationName)",
+            ])
     }
 }
 #endif
