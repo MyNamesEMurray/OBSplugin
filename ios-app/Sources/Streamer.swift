@@ -897,7 +897,7 @@ final class Streamer: ObservableObject {
         switch state {
         case .connected:
             status = .streaming
-            let size = captureSize
+            let size = resolution.size
             client.sendVideoConfig(codec: encoder?.codec ?? codec,
                                    width: size.width, height: size.height,
                                    fps: Int32(fps))
