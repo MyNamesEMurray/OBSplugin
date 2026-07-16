@@ -259,13 +259,14 @@ struct ContentView: View {
         // header must be a closure too.
         Section {
             Toggle("Remote start from OBS", isOn: $streamer.remoteStartEnabled)
+            Toggle("Match phone orientation", isOn: $streamer.followOrientation)
             Toggle("Dim screen while streaming", isOn: $streamer.dimWhileStreaming)
             Toggle("Send phone mic to OBS", isOn: $streamer.sendMicAudio)
             Toggle("Auto lip-sync reference", isOn: $streamer.sendAudioReference)
         } header: {
             Text("Options")
         } footer: {
-            Text("Remote start: while LensLink is open, OBS can start the camera for you — automatically when its source connects, or from the source's \"Start camera on the phone\" button. Siri works too: \"Start streaming with LensLink.\" Dim: the screen dims after 10 seconds of streaming; tap to wake. Phone mic: streams this phone's microphone as the camera source's audio in OBS — a wireless mic. Lip-sync: sends the phone mic purely as a timing reference so the plugin can auto-align your real microphone — never streamed or heard. The mic toggles are either/or: one mic, one role.")
+            Text("Remote start: while LensLink is open, OBS can start the camera for you — automatically when its source connects, or from the source's \"Start camera on the phone\" button. Siri works too: \"Start streaming with LensLink.\" Orientation: rotates the stream to match how the phone is held — portrait streams portrait (the OBS source resizes; pin it with a Fit bounding box). Dim: the screen dims after 10 seconds of streaming; tap to wake. Phone mic: streams this phone's microphone as the camera source's audio in OBS — a wireless mic. Lip-sync: sends the phone mic purely as a timing reference so the plugin can auto-align your real microphone — never streamed or heard. The mic toggles are either/or: one mic, one role.")
         }
     }
 

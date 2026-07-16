@@ -76,7 +76,8 @@ final class Streamer: ObservableObject {
         do {
             try camera.configure(lens: selectedLens,
                                  resolution: resolution,
-                                 fps: Int32(fps))
+                                 fps: Int32(fps),
+                                 orientation: captureOrientation)
         } catch {
             // Never swallow this: a failed reconfigure leaves the session
             // without input/output — a black stream labelled "Live".
@@ -92,36 +93,44 @@ final class Streamer: ObservableObject {
             ? VideoCodec.h264 : codec
         if let oldEncoder = encoder,
            formatChanged || oldEncoder.codec != activeCodec {
-            oldEncoder.stop()
-            let size = resolution.size
-            let newEncoder = VideoEncoder(
-                codec: activeCodec,
-                width: size.width, height: size.height,
-                fps: Int32(fps),
-                bitrate: resolution.bitrate(for: activeCodec))
-            do {
-                try newEncoder.start()
-            } catch {
-                status = .error(error.localizedDescription)
-                stopKeepingError()
-                return
-            }
-            newEncoder.onEncodedFrame = { [weak self] frame in
-                self?.client.sendVideoFrame(frame)
-            }
-            camera.onSampleBuffer = { [weak newEncoder] sampleBuffer in
-                newEncoder?.encode(sampleBuffer)
-            }
-            encoder = newEncoder
-            client.sendVideoConfig(codec: activeCodec,
-                                   width: size.width, height: size.height,
-                                   fps: Int32(fps))
-            startAdaptiveBitrate(
-                target: resolution.bitrate(for: activeCodec))
+            rebuildEncoder(codec: activeCodec)
         }
 
         encoder?.requestKeyframe()
         scheduleStateSend()
+    }
+
+    /// Tears down the running encoder and builds a fresh one for the
+    /// current capture size (fixed-dimension encoders can't follow a
+    /// resolution/orientation change), re-announcing the format to OBS.
+    private func rebuildEncoder(codec activeCodec: VideoCodec) {
+        guard let oldEncoder = encoder else { return }
+        oldEncoder.stop()
+        let size = captureSize
+        let newEncoder = VideoEncoder(
+            codec: activeCodec,
+            width: size.width, height: size.height,
+            fps: Int32(fps),
+            bitrate: resolution.bitrate(for: activeCodec))
+        do {
+            try newEncoder.start()
+        } catch {
+            status = .error(error.localizedDescription)
+            stopKeepingError()
+            return
+        }
+        newEncoder.onEncodedFrame = { [weak self] frame in
+            self?.client.sendVideoFrame(frame)
+        }
+        camera.onSampleBuffer = { [weak newEncoder] sampleBuffer in
+            newEncoder?.encode(sampleBuffer)
+        }
+        encoder = newEncoder
+        client.sendVideoConfig(codec: activeCodec,
+                               width: size.width, height: size.height,
+                               fps: Int32(fps))
+        startAdaptiveBitrate(
+            target: resolution.bitrate(for: activeCodec))
     }
     @Published var codec: VideoCodec {
         didSet { UserDefaults.standard.set(codec.rawValue, forKey: "videoCodec") }
@@ -150,6 +159,62 @@ final class Streamer: ObservableObject {
             }
         }
     }
+    /// Rotate the stream to match how the phone is held. Off by default:
+    /// a mounted phone shouldn't resize its OBS source because it was
+    /// nudged, and rotation restarts the encoder.
+    @Published var followOrientation: Bool {
+        didSet { UserDefaults.standard.set(followOrientation, forKey: "followOrientation") }
+    }
+
+    /// The capture connection's orientation; landscape-right is the
+    /// sensor-native default LensLink has always streamed.
+    private var captureOrientation: AVCaptureVideoOrientation = .landscapeRight
+
+    /// Encoder/wire dimensions: the configured resolution, with width and
+    /// height swapped while capturing portrait.
+    private var captureSize: (width: Int32, height: Int32) {
+        let size = resolution.size
+        return Self.isPortrait(captureOrientation)
+            ? (width: size.height, height: size.width) : size
+    }
+
+    private static func isPortrait(_ orientation: AVCaptureVideoOrientation) -> Bool {
+        orientation == .portrait || orientation == .portraitUpsideDown
+    }
+
+    /// Device → capture orientation. Face up/down/unknown return nil (keep
+    /// the last orientation). Note the deliberate landscape swap: a device
+    /// held landscape-*left* needs the *right* capture rotation.
+    private static func videoOrientation(
+        from device: UIDeviceOrientation) -> AVCaptureVideoOrientation? {
+        switch device {
+        case .portrait: return .portrait
+        case .portraitUpsideDown: return .portraitUpsideDown
+        case .landscapeLeft: return .landscapeRight
+        case .landscapeRight: return .landscapeLeft
+        default: return nil
+        }
+    }
+
+    private func handleOrientationChange() {
+        guard followOrientation,
+              let newOrientation = Self.videoOrientation(
+                  from: UIDevice.current.orientation),
+              newOrientation != captureOrientation else { return }
+        let wasPortrait = Self.isPortrait(captureOrientation)
+        captureOrientation = newOrientation
+        guard isStreaming else { return }
+        camera.setVideoOrientation(newOrientation)
+        if Self.isPortrait(newOrientation) != wasPortrait {
+            // Aspect flipped: the fixed-dimension encoder must be rebuilt
+            // for the swapped size (new VIDEO_CONFIG; OBS follows the
+            // bitstream dimensions).
+            rebuildEncoder(codec: encoder?.codec ?? codec)
+        }
+        // Rotated content breaks prediction; give OBS a clean restart.
+        encoder?.requestKeyframe()
+    }
+
     /// Remote start: while the app is open and idle, keep listening so OBS
     /// can start (and stop) the camera from the computer — the plugin's
     /// auto-start, its "Start camera on the phone" button, or the web panel.
@@ -429,6 +494,7 @@ final class Streamer: ObservableObject {
         sendMicAudio = defaults.bool(forKey: "sendMicAudio")
             && !defaults.bool(forKey: "sendAudioReference")
         remoteStartEnabled = defaults.object(forKey: "remoteStartEnabled") as? Bool ?? true
+        followOrientation = defaults.bool(forKey: "followOrientation")
 
         client.onStateChange = { [weak self] state in
             Task { @MainActor [weak self] in
@@ -458,6 +524,16 @@ final class Streamer: ObservableObject {
                         ? .streaming : .connecting
                     self.encoder?.requestKeyframe()
                 }
+            }
+        }
+
+        // Orientation tracking for "Match phone orientation".
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        NotificationCenter.default.addObserver(
+            forName: UIDevice.orientationDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleOrientationChange()
             }
         }
 
@@ -685,7 +761,15 @@ final class Streamer: ObservableObject {
         let activeCodec = (codec == .hevc && !VideoEncoder.isSupported(.hevc))
             ? VideoCodec.h264 : codec
 
-        let size = resolution.size
+        // Start in the phone's current orientation when following it;
+        // otherwise always sensor-native landscape (a stale portrait
+        // orientation must not leak into a follow-disabled stream).
+        captureOrientation = followOrientation
+            ? (Self.videoOrientation(from: UIDevice.current.orientation)
+               ?? captureOrientation)
+            : .landscapeRight
+
+        let size = captureSize
         let encoder = VideoEncoder(codec: activeCodec,
                                    width: size.width, height: size.height,
                                    fps: Int32(fps),
@@ -693,7 +777,8 @@ final class Streamer: ObservableObject {
         do {
             try camera.configure(lens: selectedLens,
                                  resolution: resolution,
-                                 fps: Int32(fps))
+                                 fps: Int32(fps),
+                                 orientation: captureOrientation)
             try encoder.start()
         } catch {
             status = .error(error.localizedDescription)
@@ -850,7 +935,7 @@ final class Streamer: ObservableObject {
         switch state {
         case .connected:
             status = .streaming
-            let size = resolution.size
+            let size = captureSize
             client.sendVideoConfig(codec: encoder?.codec ?? codec,
                                    width: size.width, height: size.height,
                                    fps: Int32(fps))

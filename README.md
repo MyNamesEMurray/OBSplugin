@@ -71,6 +71,10 @@ blanks the source.
   your specific camera supports.
 - **Pick any lens** — Main, Ultra Wide, Telephoto, or Front — switchable
   live while you stream.
+- **Portrait or landscape.** Turn on **Match phone orientation** and the
+  stream rotates with the phone — portrait rigs get real portrait video.
+  (The OBS source resizes on rotation; pin it with a "Scale to inner
+  bounds" transform, as with screen mirroring.)
 - **Multiple cameras.** Add one "LensLink Camera" source per phone. On USB you
   can pin a source to a specific device so the same phone always maps to
   the same source.

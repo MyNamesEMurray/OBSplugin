@@ -82,15 +82,6 @@ pinned self-signed cert — would make the app safe on shared networks
 toggle) to keep the zero-config home path frictionless. *Medium effort;
 the right thing to ship before promoting remote start heavily.*
 
-### 3. Orientation metadata
-A rotated phone streams sideways video today; streamers work around it
-with OBS transforms. Capturing device orientation and either rotating
-the buffer at the encoder or signaling it in VIDEO_CONFIG (plugin
-applies it) would make portrait rigs first-class. Decide once whether
-rotation happens on the phone (simpler for OBS, costs a transform on
-device) or in the plugin (free with the GPU render path in Performance
-#2). *Medium effort; worth bundling with Performance #2 if that lands.*
-
 ## How to use this document
 
 Pick an item, open a GitHub issue referencing the section, and prune the

@@ -185,16 +185,18 @@ final class CameraManager: NSObject {
     /// keep the throwing API).
     func configure(lens: Lens,
                    resolution: Resolution,
-                   fps: Int32) throws {
+                   fps: Int32,
+                   orientation: AVCaptureVideoOrientation = .landscapeRight) throws {
         try sessionQueue.sync {
             try configureOnQueue(lens: lens, resolution: resolution,
-                                 fps: fps)
+                                 fps: fps, orientation: orientation)
         }
     }
 
     private func configureOnQueue(lens: Lens,
                                   resolution: Resolution,
-                                  fps: Int32) throws {
+                                  fps: Int32,
+                                  orientation: AVCaptureVideoOrientation) throws {
         let position = lens.position
         session.beginConfiguration()
         defer { session.commitConfiguration() }
@@ -247,7 +249,7 @@ final class CameraManager: NSObject {
 
         if let connection = output.connection(with: .video) {
             if connection.isVideoOrientationSupported {
-                connection.videoOrientation = .landscapeRight
+                connection.videoOrientation = orientation
             }
             // Stabilization buffers multiple frames inside the capture
             // pipeline — a large hidden latency cost for a live feed.
@@ -435,6 +437,20 @@ final class CameraManager: NSObject {
         withLockedDevice { device in
             guard device.hasTorch else { return }
             device.torchMode = on ? .on : .off
+        }
+    }
+
+    /// Rotates the capture connection mid-stream ("Match phone
+    /// orientation"). The capture pipeline delivers rotated buffers, so
+    /// the encoder sees upright frames — for a portrait↔landscape flip the
+    /// caller must also rebuild the encoder with swapped dimensions.
+    func setVideoOrientation(_ orientation: AVCaptureVideoOrientation) {
+        sessionQueue.async { [weak self] in
+            guard let self,
+                  let connection = self.videoOutput?.connection(with: .video),
+                  connection.isVideoOrientationSupported,
+                  connection.videoOrientation != orientation else { return }
+            connection.videoOrientation = orientation
         }
     }
 
