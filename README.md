@@ -123,6 +123,17 @@ blanks the source.
   Decoded fps, wire bitrate, and measured capture→decode latency, updated
   every second. On the phone, the gauge button on the Live screen shows
   the same health line (fps · Mb/s · dropped frames).
+- **GPU decode pipeline (beta).** Optionally keep decoded video on the
+  graphics card the whole way to your scene — no round-trip through
+  system memory. Lower CPU use and latency; the gains grow with
+  resolution (biggest at 4K). Off by default: enable it in **Tools →
+  LensLink Settings** (takes effect after an OBS restart, and applies to
+  all LensLink sources). If your system can't share textures — see the
+  notes below — sources fall back to the standard pipeline
+  automatically.
+- **Plugin-wide settings** under **Tools → LensLink Settings**: the
+  browser control panel on/off and its port, verbose diagnostics, the
+  stream-dump troubleshooting switch, and the GPU pipeline beta.
 - **Smooth on weak Wi-Fi.** If the connection congests, the app lowers
   quality briefly and recovers, instead of piling up latency.
 - **Battery saver.** While streaming, the phone screen dims after 10
@@ -232,6 +243,34 @@ decode settings (both on by default; toggleable in the source properties),
 and dropping (rather than queuing) frames when the link stalls. **USB is the most consistent** and immune to Wi-Fi hiccups. For the
 lowest possible delay, use USB and good lighting (brighter scenes let the
 camera expose faster).
+
+## GPU decode pipeline (beta)
+
+Normally, even with hardware decoding, each decoded frame is downloaded
+from the GPU to system memory, handed to OBS, and uploaded straight back
+to the GPU for compositing — at 4K60 that detour moves ~2 GB/s of pixels
+for nothing. The beta pipeline hands OBS the decoded frame as a
+**texture**, skipping the round-trip entirely: lower CPU use, less memory
+traffic, slightly lower latency, and comfortable multi-phone setups.
+
+Enable it in **Tools → LensLink Settings** (all LensLink sources switch
+together; takes effect after OBS restarts). Platform notes:
+
+- **Windows** — works on any OBS 32-supported system (Windows 10 1909+),
+  using shared D3D11 textures.
+- **macOS** — works on any OBS 32-supported system (macOS 13+), via
+  IOSurface.
+- **Linux** — needs OBS rendering via **EGL** (the default on Wayland
+  and on current X11 builds) and a **VAAPI** driver (built into Mesa for
+  Intel/AMD; NVIDIA needs `nvidia-vaapi-driver`).
+- **Multi-GPU systems** — if decoding and OBS rendering land on
+  different GPUs, textures can't be shared; the source detects this and
+  falls back automatically.
+
+The fallback is per source and automatic in every case above — worst
+case is exactly the standard pipeline's behavior, with a log line saying
+why. If you try the beta, the OBS log and the status-bar health readout
+are the places to watch.
 
 ## Tips & troubleshooting
 

@@ -216,6 +216,16 @@ inside OBS's chrome, OBS's design language wins; our vocabulary (the
 status wording, `fps · Mb/s · ms` ordering, monospace-style numerals)
 is what carries over.
 
+### 6.5 Plugin settings dialog (Tools → LensLink Settings)
+
+Plugin-wide switches live here, not in source properties: anything with
+one value for the whole plugin (web panel + its port, diagnostics, the
+stream dump, the GPU pipeline beta). Native Qt widgets, OBS's theme,
+no custom chrome. Rules of the room: a setting that needs an OBS
+restart says so right under its checkbox in muted text; per-source
+properties never duplicate a global (the property sheet points at the
+Tools menu instead).
+
 ---
 
 ## 7. Motion

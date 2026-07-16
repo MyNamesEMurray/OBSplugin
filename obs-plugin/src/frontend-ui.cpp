@@ -22,17 +22,24 @@
 #include <obs-frontend-api.h>
 #include <util/platform.h>
 
+#include <QCheckBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QLabel>
 #include <QMainWindow>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTimer>
+#include <QVBoxLayout>
 
 #include <string>
 #include <unordered_map>
 
 extern "C" {
 #include "health.h"
+#include "plugin-settings.h"
 void lenslink_frontend_init(void);
 void lenslink_frontend_shutdown(void);
 }
@@ -55,6 +62,7 @@ struct FrontendApi {
 	void *(*get_main_window)(void);
 	bool (*add_dock_by_id)(const char *, const char *, void *);
 	void (*remove_dock)(const char *);
+	void (*add_tools_menu_item)(const char *, obs_frontend_cb, void *);
 };
 
 FrontendApi api = {};
@@ -237,6 +245,83 @@ void destroy_widgets()
 	previous.clear();
 }
 
+/* Tools -> "LensLink Settings": the plugin-wide switches that never made
+ * sense per source. Modal, plain widgets, no moc. */
+void show_settings_dialog(void *)
+{
+	QMainWindow *window =
+		static_cast<QMainWindow *>(api.get_main_window());
+	QDialog dialog(window);
+	dialog.setWindowTitle(obs_module_text("Settings.Title"));
+
+	auto *layout = new QVBoxLayout(&dialog);
+
+	auto *gpu = new QCheckBox(obs_module_text("Settings.GpuPipeline"),
+				  &dialog);
+	auto *gpu_note =
+		new QLabel(obs_module_text("Settings.GpuPipeline.Note"),
+			   &dialog);
+	gpu_note->setWordWrap(true);
+	gpu_note->setStyleSheet(QStringLiteral("color: gray;"));
+
+	auto *web = new QCheckBox(obs_module_text("Settings.Web"), &dialog);
+	auto *port = new QSpinBox(&dialog);
+	port->setRange(1024, 65535);
+	auto *diag = new QCheckBox(obs_module_text("Settings.Diagnostics"),
+				   &dialog);
+	auto *dump = new QCheckBox(obs_module_text("Settings.Dump"), &dialog);
+	auto *bench = new QCheckBox(obs_module_text("Settings.Benchmark"),
+				    &dialog);
+	bench->setToolTip(obs_module_text("Settings.Benchmark.Tip"));
+
+	obs_data_t *current = lenslink_settings_snapshot();
+	gpu->setChecked(obs_data_get_bool(current, LLS_GPU_PIPELINE));
+	web->setChecked(obs_data_get_bool(current, LLS_WEB_ENABLED));
+	port->setValue((int)obs_data_get_int(current, LLS_WEB_PORT));
+	diag->setChecked(obs_data_get_bool(current, LLS_DIAGNOSTICS));
+	dump->setChecked(obs_data_get_bool(current, LLS_DUMP_STREAM));
+	bench->setChecked(obs_data_get_bool(current, LLS_BENCHMARK));
+	obs_data_release(current);
+
+	layout->addWidget(gpu);
+	layout->addWidget(gpu_note);
+	layout->addSpacing(12);
+	layout->addWidget(web);
+	auto *form = new QFormLayout();
+	form->addRow(obs_module_text("Settings.WebPort"), port);
+	layout->addLayout(form);
+	layout->addSpacing(12);
+	layout->addWidget(diag);
+	layout->addWidget(dump);
+	layout->addWidget(bench);
+
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
+						     QDialogButtonBox::Cancel,
+					     &dialog);
+	QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog,
+			 &QDialog::accept);
+	QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog,
+			 &QDialog::reject);
+	layout->addWidget(buttons);
+
+	if (dialog.exec() != QDialog::Accepted)
+		return;
+
+	obs_data_t *values = obs_data_create();
+	obs_data_set_bool(values, LLS_GPU_PIPELINE, gpu->isChecked());
+	obs_data_set_bool(values, LLS_WEB_ENABLED, web->isChecked());
+	obs_data_set_int(values, LLS_WEB_PORT, port->value());
+	obs_data_set_bool(values, LLS_DIAGNOSTICS, diag->isChecked());
+	obs_data_set_bool(values, LLS_DUMP_STREAM, dump->isChecked());
+	obs_data_set_bool(values, LLS_BENCHMARK, bench->isChecked());
+	lenslink_settings_update(values);
+	obs_data_release(values);
+
+	/* Web/diagnostics apply immediately; the pipeline switch waits for
+	 * the restart the note promised. */
+	ios_camera_apply_global_settings();
+}
+
 void frontend_event(enum obs_frontend_event event, void *)
 {
 	switch (event) {
@@ -261,6 +346,7 @@ void lenslink_frontend_init(void)
 	resolve(api.get_main_window, "obs_frontend_get_main_window");
 	resolve(api.add_dock_by_id, "obs_frontend_add_dock_by_id");
 	resolve(api.remove_dock, "obs_frontend_remove_dock");
+	resolve(api.add_tools_menu_item, "obs_frontend_add_tools_menu_item");
 
 	if (!api.add_event_callback || !api.remove_event_callback ||
 	    !api.get_main_window) {
@@ -272,6 +358,10 @@ void lenslink_frontend_init(void)
 
 	api.add_event_callback(frontend_event, nullptr);
 	callback_installed = true;
+
+	if (api.add_tools_menu_item)
+		api.add_tools_menu_item(obs_module_text("Settings.MenuItem"),
+					show_settings_dialog, nullptr);
 }
 
 void lenslink_frontend_shutdown(void)

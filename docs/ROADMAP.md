@@ -23,17 +23,15 @@ reconfigures capture live for lens switches, and the plugin follows
 VIDEO_CONFIG. *Moderate effort; the biggest real-world win for long
 streams. Recommended next.*
 
-### 2. Full-GPU decode path in the plugin
-Today every frame does GPU decode → CPU download
-(`av_hwframe_transfer_data`) → OBS's async-frame copy → GPU upload:
-~2 GB/s of avoidable memory traffic at 4K60. Keeping frames on the GPU
-means a synchronous source with per-platform texture interop
-(D3D11VA→D3D11 on Windows, VideoToolbox→Metal/GL on macOS,
-VAAPI→GL/Vulkan on Linux), a software fallback that keeps working, and a
-rethink of the timestamp/lip-sync path (async sources get timestamp
-handling from OBS; a sync source does its own). *Large effort, largest
-remaining win — but only measurable at high resolutions. Profile a real
-1080p and 4K setup first; don't start this on vibes.*
+### 2. Full-GPU decode path in the plugin — SHIPPED AS BETA
+Implemented as the opt-in **GPU decode pipeline (beta)** in Tools →
+LensLink Settings (per-platform interop: D3D11 keyed-mutex shared
+textures on Windows, IOSurface/BGRA on macOS, VAAPI dmabuf→EGL on
+Linux; automatic per-source fallback to the standard pipeline whenever
+interop fails). Remaining before dropping the beta label: field
+validation across GPU/driver combinations, and an actual before/after
+measurement at 1080p and 4K per the house rule — the beta exists to
+gather exactly that.
 
 ### 3. Zero-copy encoder output on the phone
 The one remaining per-frame copy in the app is the AVCC→Annex B rewrite

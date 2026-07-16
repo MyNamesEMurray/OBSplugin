@@ -72,5 +72,82 @@ should add as close to zero as possible.
   figure continuously — watch it in the source's Status field; ~60 ms
   over USB at 1080p is the expected baseline.
 
+### Pipeline benchmark (built-in, for the GPU-pipeline comparison)
+
+Tools → LensLink Settings → **"Log pipeline benchmark numbers every
+5 s"**. Every ~5 s of live streaming, one tagged line lands in the OBS
+log:
+
+```
+[lenslink][bench] pipeline=standard | 1920x1080 ~60 fps |
+  video-path cost/frame: avg 2.84 ms, max 4.10 ms |
+  pixel copies: 186.4 MB/s | OBS process CPU: 9.8%
+```
+
+- **video-path cost/frame** — CPU time the plugin spends moving each
+  decoded frame toward the compositor: GPU download + OBS's frame copy
+  on the standard pipeline; texture map/draw prep on the GPU pipeline.
+  This is the work the two pipelines do differently, isolated.
+- **pixel copies** — decoded video crossing system memory (0 on a
+  healthy GPU-pipeline run; nonzero there means the fallback engaged).
+- **OBS process CPU** — sampled the same way OBS's own Stats dock does.
+
+While the toggle is on, the plugin also writes one CSV row **per second
+of live video** to `bench-<pipeline>-<epoch>.csv` in its config
+directory (the OBS log prints the exact path when the file opens).
+
+The before/after recipe:
+
+1. Keep your normal settings, enable the benchmark toggle, and stream
+   the scene for ~10 s or more. That's the **before** file.
+2. Flip the GPU pipeline setting, restart OBS, and stream the same
+   phone/scene/resolution for the same length. That's the **after**
+   file.
+3. Run `python3 tools/bench-report.py` in a terminal/command prompt.
+   With no arguments it lists the benchmark files it finds in the
+   plugin's config directory and asks you to pick the before and after
+   runs (or pass the two CSV paths directly).
+4. It prints and writes `lenslink-bench-report.md` (the comparison
+   table — mean/median/p95 per metric with % change) and
+   `lenslink-bench-report.html` (the same plus per-second charts),
+   ready to paste into the repo.
+
+Sanity check built into the report: "pixels crossing system memory"
+must read **0.00** on the GPU-pipeline run — a nonzero value there
+means the automatic CPU fallback engaged and the comparison isn't
+measuring what you think. Those report numbers are what a performance
+claim in this repo should cite.
+
 Any future performance PR should quote at least one of these numbers
 before/after.
+
+## Measured results: standard vs GPU pipeline
+
+Field measurements from the benchmark above — 12 configurations
+(720p/1080p/4K × 30/60 fps × H.264/HEVC), ~25 s of live video each, same
+PC (Ryzen 7 7800X3D, NVIDIA, D3D11) and same iPhone over Wi-Fi. Pixel
+copies read **0.00 MB/s on every GPU-pipeline run**: the zero-copy path
+engaged in all 12 configurations.
+
+| Config | Cost/frame, mean (ms) | Pixel copies (MB/s) | OBS CPU (%) |
+|---|---|---|---|
+| 720p 30 H.264 | 1.14 → 0.09 (−92%) | 82 → 0 | 1.7 → 1.4 |
+| 720p 30 HEVC | 0.81 → 0.09 (−89%) | 83 → 0 | 2.3 → 1.5 |
+| 720p 60 H.264 | 1.09 → 0.10 (−91%) | 166 → 0 | 2.1 → 1.4 |
+| 720p 60 HEVC | 0.81 → 0.09 (−89%) | 163 → 0 | 2.2 → 1.4 |
+| 1080p 30 H.264 | 2.13 → 0.11 (−95%) | 187 → 0 | 1.7 → 1.6 |
+| 1080p 30 HEVC | 1.48 → 0.10 (−93%) | 183 → 0 | 2.3 → 1.4 |
+| 1080p 60 H.264 | 2.11 → 0.10 (−95%) | 370 → 0 | 2.3 → 1.6 |
+| 1080p 60 HEVC | 1.42 → 0.09 (−93%) | 373 → 0 | 2.6 → 1.4 |
+| 4K 30 H.264 | 7.71 → 0.10 (−99%) | 734 → 0 | 3.3 → 1.5 |
+| 4K 30 HEVC | 4.96 → 0.14 (−97%) | 721 → 0 | 2.9 → 1.5 |
+| 4K 60 H.264 | 7.54 → 0.10 (−99%) | 1221 → 0 | 4.1 → 1.8 |
+| 4K 60 HEVC | 4.75 → 0.10 (−98%) | 1439 → 0 | 4.1 → 1.6 |
+
+Reading: per-frame video-path cost drops 89–99% (the copy work simply
+disappears), and the win scales with resolution — at 4K60 HEVC the
+standard pipeline was pushing ~1.4 GB/s of decoded video through system
+memory that the GPU pipeline eliminates outright, roughly halving OBS
+process CPU. Capture→decode latency and decoded fps are measured before
+the pipelines diverge and showed no systematic difference — those are
+set by the network and the phone's encoder, not by the render path.

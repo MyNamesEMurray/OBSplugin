@@ -24,13 +24,26 @@
 #include "usbmux.h"
 #include "web-control.h"
 #include "lipsync.h"
+#include "plugin-settings.h"
+#include "gpu-frame.h"
+#include "pipeline-bench.h"
+
+#include <libavutil/frame.h>
+
+/* Snapshot of the plugin-wide pipeline choice, taken once at module load
+ * (it decides how the source types are registered). */
+static bool g_gpu_pipeline_mode = false;
+
+struct ios_camera_source;
+static void gpu_pipeline_sink(void *ud, struct AVFrame *frame);
+static void gpu_pipeline_clear(struct ios_camera_source *s);
+static void gpu_pipeline_free(struct ios_camera_source *s);
 #include "mdns.h"
 #include "health.h"
 
 /* Bonjour service the app advertises while its listener is up. */
 #define LENSLINK_MDNS_SERVICE "_lenslink._tcp.local"
 
-#define WEB_CONTROL_PORT 9980
 
 #define S_MODE "mode"
 #define S_HOST "host"
@@ -42,9 +55,6 @@
 #define S_AUDIO_LATENCY "audio_device_latency_ms"
 #define S_AUTO_CALIBRATE "audio_auto_calibrate"
 #define S_AUTO_VIDEO_DELAY "audio_auto_video_delay"
-#define S_WEB_CONTROL "web_control"
-#define S_DIAGNOSTICS "diagnostics"
-#define S_DUMP_STREAM "dump_stream"
 #define S_DEACTIVATE_HIDDEN "deactivate_when_hidden"
 #define S_AUTO_START "auto_start"
 
@@ -170,7 +180,51 @@ struct ios_camera_source {
 
 	pthread_mutex_t status_mutex;
 	struct dstr status;
+
+	/* --- GPU (beta) pipeline state; used only in sync-source mode --- */
+	/* Newest decoded frame from the dial thread, and the frame the
+	 * render currently displays. Guarded by frame_mutex. */
+	pthread_mutex_t frame_mutex;
+	AVFrame *pending_frame;
+	AVFrame *current_frame;
+	uint32_t frame_width, frame_height; /* last decoded dims */
+	/* Graphics-thread-only interop + CPU-upload fallback state. */
+	struct gpu_frame_ctx *gpu;
+	struct gpu_frame_map_result gpu_map;
+	bool gpu_mapped;
+	gs_texture_t *cpu_tex[3];
+	uint32_t cpu_tex_w, cpu_tex_h;
+	int cpu_tex_fmt; /* AVPixelFormat the fallback textures match */
+	AVFrame *xfer;   /* scratch for hw->sw transfer on map failure */
+	bool clear_current; /* set under frame_mutex by disconnect; the
+			     * graphics thread frees current_frame for it */
+	int render_path; /* 0 unknown, 1 zero-copy, 2 cpu fallback (logged
+			  * on transition so a black source is explicable) */
+
+	/* Port the running web server bound (0 = not running); lets a
+	 * settings change restart it on the new port. */
+	int web_port;
 };
+
+/* Starts/stops/rebinds the web panel to match the plugin-wide settings.
+ * Main/UI thread only (create/update/the settings dialog). */
+static void apply_web_settings(struct ios_camera_source *s)
+{
+	if (s->is_screen_source)
+		return;
+	bool want = lenslink_settings_web_enabled();
+	int port = lenslink_settings_web_port();
+
+	if (s->web && (!want || s->web_port != port)) {
+		web_control_stop(s->web);
+		s->web = NULL;
+		s->web_port = 0;
+	}
+	if (want && !s->web) {
+		s->web = web_control_start(s, (uint16_t)port);
+		s->web_port = s->web ? port : 0;
+	}
+}
 
 bool ios_camera_is_screen(struct ios_camera_source *s)
 {
@@ -215,6 +269,22 @@ static void health_unregister(struct ios_camera_source *s)
 	for (int i = 0; i < MAX_HEALTH_SOURCES; i++) {
 		if (g_health_sources[i] == s)
 			g_health_sources[i] = NULL;
+	}
+	pthread_mutex_unlock(&g_health_mutex);
+}
+
+/* The plugin-wide settings changed (Tools -> LensLink Settings): push
+ * them into every live source. UI thread. */
+void ios_camera_apply_global_settings(void)
+{
+	pthread_mutex_lock(&g_health_mutex);
+	for (int i = 0; i < MAX_HEALTH_SOURCES; i++) {
+		struct ios_camera_source *s = g_health_sources[i];
+		if (!s)
+			continue;
+		s->diagnostics = lenslink_settings_diagnostics();
+		s->dump_stream = lenslink_settings_dump_stream();
+		apply_web_settings(s);
 	}
 	pthread_mutex_unlock(&g_health_mutex);
 }
@@ -1068,12 +1138,18 @@ static void stats_tick(struct ios_camera_source *s, struct client_state *c)
 		return;
 	c->last_stats_ns = now;
 
+	/* Piggyback the pipeline benchmark logger on this 1 Hz tick (it
+	 * rate-limits itself and no-ops when the setting is off). */
+	lenslink_bench_maybe_log();
+
 	pthread_mutex_lock(&s->status_mutex);
 	s->stat_connected = true;
 	s->stat_frames = c->frames_output;
 	s->stat_bytes = c->video_bytes;
 	snprintf(s->stat_device, sizeof(s->stat_device), "%.63s", c->name);
+	int latency_ms = (int)(s->last_video_latency_ns / 1000000);
 	pthread_mutex_unlock(&s->status_mutex);
+	lenslink_bench_latency(latency_ms);
 }
 
 static void dump_close(struct client_state *c)
@@ -1133,6 +1209,7 @@ static void client_disconnect(struct ios_camera_source *s,
 	/* Clear the last frame so the source goes blank when the phone
 	 * disconnects instead of freezing on a stale image. */
 	obs_source_output_video(s->source, NULL);
+	gpu_pipeline_clear(s);
 
 	pthread_mutex_lock(&s->status_mutex);
 	s->device_state[0] = 0;
@@ -1416,6 +1493,13 @@ static bool handle_packet(struct ios_camera_source *s, struct client_state *c,
 					? c->codec_id
 					: AV_CODEC_ID_H264,
 				s->hw_decode, c->hw_retry);
+			/* GPU pipeline: frames come out as AVFrames for the
+			 * render thread instead of obs_source_output_video.
+			 * Set before the first decode (macOS picks its BGRA
+			 * surface pool in the first get_format). */
+			if (c->decoder && g_gpu_pipeline_mode)
+				h264_decoder_set_frame_sink(
+					c->decoder, gpu_pipeline_sink, s);
 			if (!c->decoder) {
 				c->next_decoder_attempt =
 					now + 5000000000ULL;
@@ -2110,8 +2194,8 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 	obs_source_set_async_unbuffered(
 		s->source, obs_data_get_bool(settings, S_LOW_LATENCY));
 	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
-	s->diagnostics = obs_data_get_bool(settings, S_DIAGNOSTICS);
-	s->dump_stream = obs_data_get_bool(settings, S_DUMP_STREAM);
+	s->diagnostics = lenslink_settings_diagnostics();
+	s->dump_stream = lenslink_settings_dump_stream();
 	s->deactivate_hidden =
 		obs_data_get_bool(settings, S_DEACTIVATE_HIDDEN);
 	s->auto_start = !s->is_screen_source &&
@@ -2161,16 +2245,9 @@ static void ios_camera_update(void *data, obs_data_t *settings)
 	if (!want_video_delay)
 		set_video_delay(s, 0);
 
-	/* Screen sources never run the web panel: nothing to control (and
-	 * the setting isn't shown, so obs_data would report the default). */
-	bool web = !s->is_screen_source &&
-		   obs_data_get_bool(settings, S_WEB_CONTROL);
-	if (web && !s->web)
-		s->web = web_control_start(s, WEB_CONTROL_PORT);
-	else if (!web && s->web) {
-		web_control_stop(s->web);
-		s->web = NULL;
-	}
+	/* Screen sources never run the web panel: nothing to control. The
+	 * enable/port live in the plugin-wide settings now (Tools menu). */
+	apply_web_settings(s);
 
 	/* Turned off (or retargeted): undo the offset we applied. */
 	if (was_syncing && !still_syncing && applied != 0) {
@@ -2206,6 +2283,7 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	 * thread reads status; the audio callback reads lipsync). */
 	pthread_mutex_init(&s->status_mutex, NULL);
 	pthread_mutex_init(&s->lipsync_mutex, NULL);
+	pthread_mutex_init(&s->frame_mutex, NULL);
 	dstr_init(&s->status);
 	s->lipsync = lipsync_create();
 
@@ -2217,8 +2295,8 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	obs_source_set_async_unbuffered(
 		source, obs_data_get_bool(settings, S_LOW_LATENCY));
 	s->hw_decode = obs_data_get_bool(settings, S_HW_DECODE);
-	s->diagnostics = obs_data_get_bool(settings, S_DIAGNOSTICS);
-	s->dump_stream = obs_data_get_bool(settings, S_DUMP_STREAM);
+	s->diagnostics = lenslink_settings_diagnostics();
+	s->dump_stream = lenslink_settings_dump_stream();
 	s->deactivate_hidden =
 		obs_data_get_bool(settings, S_DEACTIVATE_HIDDEN);
 	s->auto_start = !s->is_screen_source &&
@@ -2240,8 +2318,7 @@ static void *ios_camera_create(obs_data_t *settings, obs_source_t *source)
 	if (!s->is_screen_source) {
 		if (s->audio_sync && s->auto_calibrate && s->audio_source[0])
 			hook_audio(s, s->audio_source);
-		if (obs_data_get_bool(settings, S_WEB_CONTROL))
-			s->web = web_control_start(s, WEB_CONTROL_PORT);
+		apply_web_settings(s);
 	}
 
 	start_thread(s);
@@ -2273,10 +2350,17 @@ static void ios_camera_destroy(void *data)
 		}
 	}
 
+	if (g_gpu_pipeline_mode) {
+		obs_enter_graphics();
+		gpu_pipeline_free(s);
+		obs_leave_graphics();
+	}
+
 	for (int i = 0; i < s->control_count; i++)
 		bfree(s->control_queue[i]);
 	lipsync_destroy(s->lipsync);
 	dstr_free(&s->status);
+	pthread_mutex_destroy(&s->frame_mutex);
 	pthread_mutex_destroy(&s->lipsync_mutex);
 	pthread_mutex_destroy(&s->status_mutex);
 	bfree(s);
@@ -2294,9 +2378,6 @@ static void ios_camera_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_AUDIO_LATENCY, 0);
 	obs_data_set_default_bool(settings, S_AUTO_CALIBRATE, false);
 	obs_data_set_default_bool(settings, S_AUTO_VIDEO_DELAY, false);
-	obs_data_set_default_bool(settings, S_WEB_CONTROL, true);
-	obs_data_set_default_bool(settings, S_DIAGNOSTICS, false);
-	obs_data_set_default_bool(settings, S_DUMP_STREAM, false);
 	obs_data_set_default_bool(settings, S_DEACTIVATE_HIDDEN, false);
 	obs_data_set_default_bool(settings, S_AUTO_START, true);
 }
@@ -2460,17 +2541,11 @@ static obs_properties_t *build_properties(struct ios_camera_source *s,
 			props, S_AUDIO_LATENCY, T_("AudioLatency"), 0, 500, 1);
 		obs_property_int_set_suffix(audio_lat, " ms");
 
-		obs_properties_add_bool(props, S_WEB_CONTROL,
-					T_("WebControl"));
 	}
 
-	obs_property_t *diag =
-		obs_properties_add_bool(props, S_DIAGNOSTICS, T_("Diagnostics"));
-	obs_property_set_long_description(diag, T_("Diagnostics.Desc"));
-
-	obs_property_t *dump = obs_properties_add_bool(props, S_DUMP_STREAM,
-						       T_("DumpStream"));
-	obs_property_set_long_description(dump, T_("DumpStream.Desc"));
+	/* Web panel / diagnostics / stream dump moved to the plugin-wide
+	 * settings (Tools -> LensLink Settings): they never made sense per
+	 * source — one web port, one log. */
 
 	obs_property_t *status = obs_properties_add_text(
 		props, "status_info", T_("Status"), OBS_TEXT_INFO);
@@ -2504,6 +2579,291 @@ static obs_properties_t *lenslink_screen_get_properties(void *data)
  * collections. Each type accepts only its own stream kind: the HELLO
  * handler rejects a mismatched stream (wrong_kind) and the status line
  * says which source type to use instead. */
+
+/* ------------------------------------------------------------------ */
+/* GPU (beta) pipeline: sync-source rendering                          */
+/* ------------------------------------------------------------------ */
+
+/* Decode thread -> render thread hand-off: newest frame wins. */
+static void gpu_pipeline_sink(void *ud, AVFrame *frame)
+{
+	struct ios_camera_source *s = ud;
+	pthread_mutex_lock(&s->frame_mutex);
+	if (s->pending_frame)
+		av_frame_free(&s->pending_frame);
+	s->pending_frame = frame;
+	s->frame_width = (uint32_t)frame->width;
+	s->frame_height = (uint32_t)frame->height;
+	pthread_mutex_unlock(&s->frame_mutex);
+}
+
+/* Blank the source (disconnect/stream end): the pending frame goes here;
+ * current_frame belongs to the graphics thread ONLY (video_render uses it
+ * outside frame_mutex), so freeing it from this (network) thread races
+ * the render loop — instead raise a flag the next render honours. Dims
+ * reset so get_width/get_height report nothing to draw. */
+static void gpu_pipeline_clear(struct ios_camera_source *s)
+{
+	if (!g_gpu_pipeline_mode)
+		return;
+	pthread_mutex_lock(&s->frame_mutex);
+	if (s->pending_frame)
+		av_frame_free(&s->pending_frame);
+	s->clear_current = true;
+	s->frame_width = 0;
+	s->frame_height = 0;
+	pthread_mutex_unlock(&s->frame_mutex);
+}
+
+static uint32_t ios_camera_get_width(void *data)
+{
+	struct ios_camera_source *s = data;
+	return s->frame_width;
+}
+
+static uint32_t ios_camera_get_height(void *data)
+{
+	struct ios_camera_source *s = data;
+	return s->frame_height;
+}
+
+/* The NV12/I420 draw effect, shared by every source (graphics thread). */
+static gs_effect_t *g_yuv_effect = NULL;
+static bool g_yuv_effect_tried = false;
+
+static gs_effect_t *yuv_effect(void)
+{
+	if (!g_yuv_effect && !g_yuv_effect_tried) {
+		g_yuv_effect_tried = true;
+		char *path = obs_module_file("nv12.effect");
+		if (path) {
+			g_yuv_effect = gs_effect_create_from_file(path, NULL);
+			bfree(path);
+		}
+		if (!g_yuv_effect)
+			blog(LOG_ERROR,
+			     "[lenslink] gpu pipeline: nv12.effect missing — "
+			     "YUV frames cannot be drawn");
+	}
+	return g_yuv_effect;
+}
+
+/* CPU-upload fallback: software-decoded frames (or a failed interop) are
+ * uploaded into dynamic textures — the same work OBS's async path would
+ * do, so "fallback" here means "no worse than the standard pipeline". */
+static bool upload_sw_frame(struct ios_camera_source *s, const AVFrame *f,
+			    struct gpu_frame_map_result *out)
+{
+	int fmt = f->format;
+	if (fmt != AV_PIX_FMT_NV12 && fmt != AV_PIX_FMT_YUV420P &&
+	    fmt != AV_PIX_FMT_YUVJ420P)
+		return false;
+
+	uint32_t w = (uint32_t)f->width, h = (uint32_t)f->height;
+	if (!s->cpu_tex[0] || s->cpu_tex_w != w || s->cpu_tex_h != h ||
+	    s->cpu_tex_fmt != fmt) {
+		for (int i = 0; i < 3; i++) {
+			if (s->cpu_tex[i]) {
+				gs_texture_destroy(s->cpu_tex[i]);
+				s->cpu_tex[i] = NULL;
+			}
+		}
+		s->cpu_tex[0] =
+			gs_texture_create(w, h, GS_R8, 1, NULL, GS_DYNAMIC);
+		if (fmt == AV_PIX_FMT_NV12) {
+			s->cpu_tex[1] = gs_texture_create(w / 2, h / 2, GS_R8G8,
+							  1, NULL, GS_DYNAMIC);
+		} else {
+			s->cpu_tex[1] = gs_texture_create(w / 2, h / 2, GS_R8,
+							  1, NULL, GS_DYNAMIC);
+			s->cpu_tex[2] = gs_texture_create(w / 2, h / 2, GS_R8,
+							  1, NULL, GS_DYNAMIC);
+		}
+		if (!s->cpu_tex[0] || !s->cpu_tex[1] ||
+		    (fmt != AV_PIX_FMT_NV12 && !s->cpu_tex[2]))
+			return false;
+		s->cpu_tex_w = w;
+		s->cpu_tex_h = h;
+		s->cpu_tex_fmt = fmt;
+	}
+
+	gs_texture_set_image(s->cpu_tex[0], f->data[0],
+			     (uint32_t)f->linesize[0], false);
+	gs_texture_set_image(s->cpu_tex[1], f->data[1],
+			     (uint32_t)f->linesize[1], false);
+	if (fmt != AV_PIX_FMT_NV12)
+		gs_texture_set_image(s->cpu_tex[2], f->data[2],
+				     (uint32_t)f->linesize[2], false);
+
+	out->tex[0] = s->cpu_tex[0];
+	out->tex[1] = s->cpu_tex[1];
+	out->rgba = false;
+	out->width = w;
+	out->height = h;
+	return true;
+}
+
+static void ios_camera_video_render(void *data, gs_effect_t *unused)
+{
+	UNUSED_PARAMETER(unused);
+	struct ios_camera_source *s = data;
+
+	/* Adopt the newest decoded frame, if any. */
+	pthread_mutex_lock(&s->frame_mutex);
+	AVFrame *fresh = s->pending_frame;
+	s->pending_frame = NULL;
+	bool clear = s->clear_current;
+	s->clear_current = false;
+	pthread_mutex_unlock(&s->frame_mutex);
+
+	/* A disconnect asked for a blank source; the free happens here, on
+	 * the only thread that owns current_frame. */
+	if (clear && s->current_frame) {
+		av_frame_free(&s->current_frame);
+		s->gpu_mapped = false;
+	}
+
+	if (fresh) {
+		if (s->current_frame)
+			av_frame_free(&s->current_frame);
+		s->current_frame = fresh;
+
+		uint64_t bench_start = os_gettime_ns();
+		if (!s->gpu)
+			s->gpu = gpu_frame_ctx_create();
+		s->gpu_mapped = false;
+		if (gpu_frame_supported(fresh))
+			s->gpu_mapped =
+				gpu_frame_map(s->gpu, fresh, &s->gpu_map);
+
+		size_t copied = 0;
+		if (!s->gpu_mapped) {
+			/* Fallback must ALWAYS produce video. A hardware
+			 * frame that couldn't be mapped has no CPU pixels to
+			 * upload — download it first (exactly the standard
+			 * pipeline's work, counted as such below). */
+			const AVFrame *up = fresh;
+			if (fresh->hw_frames_ctx) {
+				if (!s->xfer)
+					s->xfer = av_frame_alloc();
+				if (s->xfer) {
+					av_frame_unref(s->xfer);
+					if (av_hwframe_transfer_data(
+						    s->xfer, fresh, 0) == 0) {
+						av_frame_copy_props(s->xfer,
+								    fresh);
+						up = s->xfer;
+					}
+				}
+			}
+			if (!upload_sw_frame(s, up, &s->gpu_map)) {
+				if (s->render_path != 3) {
+					s->render_path = 3;
+					blog(LOG_WARNING,
+					     "[lenslink] gpu pipeline: frame "
+					     "(format %d) neither mappable "
+					     "nor uploadable — source stays "
+					     "blank",
+					     up->format);
+				}
+				av_frame_free(&s->current_frame);
+				return;
+			}
+			copied = (size_t)s->gpu_map.width *
+				 s->gpu_map.height * 3 / 2;
+			if (up != fresh)
+				copied *= 2; /* download + upload */
+		}
+
+		int path = s->gpu_mapped ? 1 : 2;
+		if (path != s->render_path) {
+			s->render_path = path;
+			blog(LOG_INFO,
+			     "[lenslink] gpu pipeline: rendering via %s",
+			     s->gpu_mapped ? "zero-copy textures"
+					   : "CPU upload fallback");
+		}
+
+		/* Benchmark: this pipeline's per-frame cost is the texture
+		 * map (or, on fallback, the download+upload). Bytes cross
+		 * system memory only on the fallback path. */
+		lenslink_bench_frame(os_gettime_ns() - bench_start, copied,
+				     (int)s->gpu_map.width,
+				     (int)s->gpu_map.height);
+	}
+	if (!s->current_frame)
+		return;
+
+	bool locked = s->gpu_mapped ? gpu_frame_lock(s->gpu) : true;
+	if (!locked)
+		return;
+
+	if (s->gpu_map.rgba) {
+		gs_effect_t *eff = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+		gs_eparam_t *image = gs_effect_get_param_by_name(eff, "image");
+		gs_effect_set_texture(image, s->gpu_map.tex[0]);
+		while (gs_effect_loop(eff, "Draw"))
+			gs_draw_sprite(s->gpu_map.tex[0], 0, s->gpu_map.width,
+				       s->gpu_map.height);
+	} else {
+		gs_effect_t *eff = yuv_effect();
+		if (eff) {
+			bool i420 = !s->gpu_mapped &&
+				    s->cpu_tex_fmt != AV_PIX_FMT_NV12;
+			gs_effect_set_texture(
+				gs_effect_get_param_by_name(eff, "y_tex"),
+				s->gpu_map.tex[0]);
+			gs_effect_set_texture(
+				gs_effect_get_param_by_name(eff, "uv_tex"),
+				s->gpu_map.tex[1]);
+			if (i420)
+				gs_effect_set_texture(
+					gs_effect_get_param_by_name(eff,
+								    "v_tex"),
+					s->cpu_tex[2]);
+			while (gs_effect_loop(eff, i420 ? "DrawI420" : "Draw"))
+				gs_draw_sprite(s->gpu_map.tex[0], 0,
+					       s->gpu_map.width,
+					       s->gpu_map.height);
+		}
+	}
+
+	if (s->gpu_mapped)
+		gpu_frame_unlock(s->gpu);
+}
+
+/* Frees everything the render path owns; called from destroy with the
+ * graphics context entered. */
+static void gpu_pipeline_free(struct ios_camera_source *s)
+{
+	gpu_frame_ctx_destroy(s->gpu);
+	s->gpu = NULL;
+	for (int i = 0; i < 3; i++) {
+		if (s->cpu_tex[i]) {
+			gs_texture_destroy(s->cpu_tex[i]);
+			s->cpu_tex[i] = NULL;
+		}
+	}
+	if (s->pending_frame)
+		av_frame_free(&s->pending_frame);
+	if (s->current_frame)
+		av_frame_free(&s->current_frame);
+	if (s->xfer)
+		av_frame_free(&s->xfer);
+}
+
+/* Called from plugin-main.c at module load, BEFORE registration, when
+ * the plugin-wide "GPU pipeline (beta)" setting is on: the sources
+ * become self-rendering sync sources instead of async pixel-pushers. */
+void lenslink_sources_use_gpu_pipeline(struct obs_source_info *info)
+{
+	g_gpu_pipeline_mode = true;
+	info->output_flags &= ~(uint32_t)OBS_SOURCE_ASYNC_VIDEO;
+	info->output_flags |= OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW;
+	info->video_render = ios_camera_video_render;
+	info->get_width = ios_camera_get_width;
+	info->get_height = ios_camera_get_height;
+}
 
 struct obs_source_info ios_camera_source_info = {
 	.id = "ios_camera_source",

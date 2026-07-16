@@ -54,6 +54,9 @@ add_library(${PROJECT_NAME} MODULE
   src/web-control.c
   src/lipsync.c
   src/mdns.c
+  src/plugin-settings.c
+  src/gpu-frame.c
+  src/pipeline-bench.c
   src/protocol.h
   src/web-control.h
   src/lipsync.h
@@ -67,6 +70,12 @@ target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs ${FFMPEG_TARGET})
 
 if(WIN32)
   target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
+endif()
+
+if(APPLE)
+  # GPU pipeline: gpu-frame.c reads the decoder's CVPixelBuffers
+  # (CVPixelBufferGetIOSurface & co) to bind their IOSurfaces as textures.
+  target_link_libraries(${PROJECT_NAME} PRIVATE "-framework CoreVideo")
 endif()
 
 # --- frontend UI (status bar + dock; optional) -------------------------------

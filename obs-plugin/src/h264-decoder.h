@@ -22,6 +22,21 @@ struct h264_decoder;
 struct h264_decoder *h264_decoder_create(enum AVCodecID codec_id,
 					 bool allow_hw, int hw_start);
 
+/*
+ * GPU pipeline: route decoded frames to `sink` as AVFrames instead of
+ * downloading and pushing them via obs_source_output_video. Hardware
+ * frames arrive still on the GPU; software-decoded frames pass through
+ * unchanged (the sink uploads them itself). The sink OWNS each frame
+ * (av_frame_free when done) and is called on the decode thread.
+ *
+ * Set immediately after create, before the first decode: on macOS it
+ * also switches the VideoToolbox surface pool to BGRA (chosen in the
+ * first get_format callback) so frames map to a single OBS texture.
+ */
+void h264_decoder_set_frame_sink(struct h264_decoder *dec,
+				 void (*sink)(void *ud, struct AVFrame *frame),
+				 void *ud);
+
 /* Whether this instance actually decodes on the GPU. */
 bool h264_decoder_is_hw(const struct h264_decoder *dec);
 
