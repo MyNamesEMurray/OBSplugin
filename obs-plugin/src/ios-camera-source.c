@@ -196,6 +196,8 @@ struct ios_camera_source {
 	uint32_t cpu_tex_w, cpu_tex_h;
 	int cpu_tex_fmt; /* AVPixelFormat the fallback textures match */
 	AVFrame *xfer;   /* scratch for hw->sw transfer on map failure */
+	bool clear_current; /* set under frame_mutex by disconnect; the
+			     * graphics thread frees current_frame for it */
 	int render_path; /* 0 unknown, 1 zero-copy, 2 cpu fallback (logged
 			  * on transition so a black source is explicable) */
 
@@ -2595,8 +2597,11 @@ static void gpu_pipeline_sink(void *ud, AVFrame *frame)
 	pthread_mutex_unlock(&s->frame_mutex);
 }
 
-/* Blank the source (disconnect/stream end): both frames go; dims reset
- * so get_width/get_height report nothing to draw. */
+/* Blank the source (disconnect/stream end): the pending frame goes here;
+ * current_frame belongs to the graphics thread ONLY (video_render uses it
+ * outside frame_mutex), so freeing it from this (network) thread races
+ * the render loop — instead raise a flag the next render honours. Dims
+ * reset so get_width/get_height report nothing to draw. */
 static void gpu_pipeline_clear(struct ios_camera_source *s)
 {
 	if (!g_gpu_pipeline_mode)
@@ -2604,8 +2609,7 @@ static void gpu_pipeline_clear(struct ios_camera_source *s)
 	pthread_mutex_lock(&s->frame_mutex);
 	if (s->pending_frame)
 		av_frame_free(&s->pending_frame);
-	if (s->current_frame)
-		av_frame_free(&s->current_frame);
+	s->clear_current = true;
 	s->frame_width = 0;
 	s->frame_height = 0;
 	pthread_mutex_unlock(&s->frame_mutex);
@@ -2708,7 +2712,16 @@ static void ios_camera_video_render(void *data, gs_effect_t *unused)
 	pthread_mutex_lock(&s->frame_mutex);
 	AVFrame *fresh = s->pending_frame;
 	s->pending_frame = NULL;
+	bool clear = s->clear_current;
+	s->clear_current = false;
 	pthread_mutex_unlock(&s->frame_mutex);
+
+	/* A disconnect asked for a blank source; the free happens here, on
+	 * the only thread that owns current_frame. */
+	if (clear && s->current_frame) {
+		av_frame_free(&s->current_frame);
+		s->gpu_mapped = false;
+	}
 
 	if (fresh) {
 		if (s->current_frame)

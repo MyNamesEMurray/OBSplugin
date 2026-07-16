@@ -363,6 +363,11 @@ static bool win_ensure_textures(struct gpu_frame_ctx *ctx, uint32_t w,
 		}
 		return false;
 	}
+	/* libobs creates KM textures with key 0 already acquired on the
+	 * OBS device; without releasing that initial hold the decode
+	 * device's AcquireSync below can never succeed. */
+	gs_texture_release_sync(ctx->tex_y, 0);
+
 	ctx->shared_handle = gs_texture_get_shared_handle(ctx->tex_y);
 	if (ctx->shared_handle == GS_INVALID_HANDLE) {
 		if (!ctx->warned) {
