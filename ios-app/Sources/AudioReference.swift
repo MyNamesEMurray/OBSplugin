@@ -31,7 +31,11 @@ final class AudioReference {
     /// external port. (Requires a record-capable session category, so the
     /// list is meaningful only while mic capture is configured.)
     static func availableMics() -> [MicOption] {
-        var mics = [MicOption(id: "auto", name: "Auto")]
+        // "iOS default" and not just "Auto": the system's default input
+        // is the Bottom mic no matter which camera is active (iOS never
+        // ties the mic to the camera) — the label heads off "why is the
+        // front camera using the bottom mic?"
+        var mics = [MicOption(id: "auto", name: "Auto (iOS default)")]
         for port in AVAudioSession.sharedInstance().availableInputs ?? [] {
             if port.portType == .builtInMic {
                 for source in port.dataSources ?? [] {

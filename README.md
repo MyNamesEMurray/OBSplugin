@@ -97,7 +97,13 @@ blanks the source.
 - **Phone mic audio (optional).** Turn on **Send phone mic to OBS** and the
   camera source carries the phone's microphone as its audio — the phone
   doubles as a wireless mic. (Off by default; most streamers use their own
-  mic and lip-sync it instead.)
+  mic and lip-sync it instead.) A mic row on the Live screen (and in the
+  web panel) picks which microphone: **Auto** is iOS's default input
+  routing — normally the *Bottom* mic regardless of which camera is
+  active, since iOS doesn't tie the mic to the camera (a connected
+  headset/Bluetooth mic takes over automatically). Pick **Front** or
+  **Back** explicitly to aim a specific mic at your subject; the switch is
+  live, no restart.
 - **Automatic lip sync.** The plugin measures the camera's latency and can
   automatically line up a separate microphone with the video — no guessing
   at delay values. (See "Lip sync" below.)
