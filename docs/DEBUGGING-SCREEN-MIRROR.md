@@ -2,8 +2,8 @@
 
 Screen mirroring has several moving parts — a broadcast extension that has
 no console of its own, a network hop (USB or Wi-Fi), and a decoder on the
-plugin side. This branch adds heavy instrumentation so an intermittent
-failure points at the exact stage that broke.
+plugin side. The plugin and extension carry heavy instrumentation so an
+intermittent failure points at the exact stage that broke.
 
 Everything lands in **one place: the OBS log** (Help → Log Files → View
 Current Log). The phone's own counters are forwarded over the wire and
@@ -25,9 +25,8 @@ else).
 
 ## Turning it on
 
-Diagnostics are **on by default on this branch**. In the LensLink Camera
-source properties there's a **"Verbose diagnostics in the OBS log"**
-checkbox — leave it on while debugging, turn it off for quiet logs.
+In the LensLink source's properties, enable **"Verbose diagnostics in the
+OBS log"** — leave it on while debugging, turn it off for quiet logs.
 
 ## What you'll see
 
