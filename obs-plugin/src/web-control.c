@@ -125,6 +125,13 @@ static const char control_page[] =
 	"<path d='M15 4 h5 v5'/><path d='M20 9 A8 8 0 0 0 6 6'/>"
 	"<path d='M9 20 H4 v-5'/><path d='M4 15 A8 8 0 0 0 18 18'/></svg></button>"
 	"</div>"
+	/* Format row (resolution / fps / codec): shown once the app's STATE
+	 * advertises its capability lists; older apps just never show it. */
+	"<div class='row' id='fmtrow' style='display:none'>"
+	"<select id='fmtres' title='Resolution'></select>"
+	"<select id='fmtfps' title='Frame rate'></select>"
+	"<select id='fmtcodec' title='Codec'></select>"
+	"</div>"
 	/* Remote stop: mirrors the app's red Stop. The phone drops back to
 	 * standby, so this panel swaps to the Start button afterwards. */
 	"<div class='btnrow'>"
@@ -142,7 +149,9 @@ static const char control_page[] =
 	"fhintEl=$('fhint'),flashlightEl=$('flashlight'),flipEl=$('flip'),lensselEl=$('lenssel'),"
 	"panelEl=$('panel'),screennoteEl=$('screennote'),"
 	"startpanelEl=$('startpanel'),startbtnEl=$('startbtn'),"
-	"stopbtnEl=$('stopbtn'),asbtn1El=$('asbtn1'),asbtn2El=$('asbtn2');"
+	"fmtrowEl=$('fmtrow'),fmtresEl=$('fmtres'),fmtfpsEl=$('fmtfps'),"
+	"fmtcodecEl=$('fmtcodec'),stopbtnEl=$('stopbtn'),"
+	"asbtn1El=$('asbtn1'),asbtn2El=$('asbtn2');"
 	"const COL={live:'#30D158',amber:'#FF9F0A',red:'#FF453A',grey:'#8E8E93'};"
 	"let lastTouch=0;const touch=()=>lastTouch=Date.now();"
 	"const send=o=>{touch();"
@@ -177,6 +186,17 @@ static const char control_page[] =
 	"const toggleAS=()=>{touch();asUI(!autoStart);"
 	"fetch('/api/autostart',{method:'POST',body:JSON.stringify({on:autoStart})})};"
 	"asbtn1El.onclick=toggleAS;asbtn2El.onclick=toggleAS;"
+	/* Rebuild a select only when its option list changes (same pattern as
+	 * the lens picker); values stay raw, labels get a formatter. */
+	"function fillSel(el,opts,val,fmt){const want=opts.join('|');"
+	"if(el.dataset.opts!==want){el.dataset.opts=want;"
+	"el.replaceChildren(...opts.map(o=>{const x=document.createElement('option');"
+	"x.value=o;x.textContent=fmt?fmt(o):o;return x}))}"
+	"if(val!=null)el.value=val}"
+	"const CODEC_NAMES={h264:'H.264',hevc:'HEVC'};"
+	"fmtresEl.onchange=()=>send({cmd:'set_format',resolution:fmtresEl.value});"
+	"fmtfpsEl.onchange=()=>send({cmd:'set_format',fps:+fmtfpsEl.value});"
+	"fmtcodecEl.onchange=()=>send({cmd:'set_format',codec:fmtcodecEl.value});"
 	"function statusColor(t){t=(t||'').toLowerCase();"
 	/* Standby/starting are amber (ready, not live) — test before the
 	 * generic 'connected' match, which their wording also contains. */
@@ -215,7 +235,15 @@ static const char control_page[] =
 	"lensselEl.replaceChildren(...st.lenses.map(l=>{"
 	"const o=document.createElement('option');o.textContent=l;return o}))}"
 	"if(st.lens)lensselEl.value=st.lens}"
-	"lensselEl.style.display=(st.lenses&&st.lenses.length>1)?'':'none'}"
+	"lensselEl.style.display=(st.lenses&&st.lenses.length>1)?'':'none';"
+	/* Format pickers, populated from the app's capability lists. */
+	"if(Array.isArray(st.resolutions)&&Array.isArray(st.frameRates)){"
+	"fmtrowEl.style.display='';"
+	"fillSel(fmtresEl,st.resolutions,st.resolution);"
+	"fillSel(fmtfpsEl,st.frameRates.map(String),String(st.fps),f=>f+' fps');"
+	"const codecs=Array.isArray(st.codecs)?st.codecs:[];"
+	"fmtcodecEl.style.display=codecs.length>1?'':'none';"
+	"fillSel(fmtcodecEl,codecs,st.codec,c=>CODEC_NAMES[c]||c)}}"
 	"}catch(e){statusEl.textContent='plugin unreachable';dotEl.style.background=COL.grey}}"
 	"setInterval(poll,1000);poll();"
 	"</script></body></html>";

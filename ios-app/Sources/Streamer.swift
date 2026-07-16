@@ -86,8 +86,12 @@ final class Streamer: ObservableObject {
         }
         resetCameraControls()
 
-        if formatChanged, let oldEncoder = encoder {
-            let activeCodec = oldEncoder.codec
+        // Same HEVC fallback as start(): the codec setting may have been
+        // switched (remotely or locally) to one this device can't encode.
+        let activeCodec = (codec == .hevc && !VideoEncoder.isSupported(.hevc))
+            ? VideoCodec.h264 : codec
+        if let oldEncoder = encoder,
+           formatChanged || oldEncoder.codec != activeCodec {
             oldEncoder.stop()
             let size = resolution.size
             let newEncoder = VideoEncoder(
@@ -193,7 +197,8 @@ final class Streamer: ObservableObject {
     }
 
     private func controlStateSnapshot() -> [String: Any] {
-        [
+        let (resolutions, frameRates) = formatCapabilities()
+        return [
             "zoom": Double(zoom),
             "maxZoom": Double(camera.maxZoomFactor),
             "exposureBias": Double(exposureBias),
@@ -204,7 +209,39 @@ final class Streamer: ObservableObject {
             "camera": selectedLens.position == .front ? "front" : "back",
             "lens": selectedLens.label,
             "lenses": availableLenses.map { $0.label },
+            // Format state + what this lens supports, so remote UIs can
+            // offer set_format pickers with only valid choices.
+            "resolution": resolution.rawValue,
+            "fps": fps,
+            "codec": (encoder?.codec ?? codec).rawValue,
+            "resolutions": resolutions,
+            "frameRates": frameRates,
+            "codecs": VideoCodec.allCases
+                .filter { VideoEncoder.isSupported($0) }
+                .map { $0.rawValue },
         ]
+    }
+
+    /// Capability lists for the STATE snapshot. Cached per lens+resolution:
+    /// `CameraManager.supports` walks the device's format table, and the
+    /// snapshot is resent on every (debounced) control change — e.g. for
+    /// the whole length of a zoom drag.
+    private var capabilityCache: (key: String, resolutions: [String], frameRates: [Int])?
+
+    private func formatCapabilities() -> ([String], [Int]) {
+        let key = "\(selectedLens.id)|\(resolution.rawValue)"
+        if let cached = capabilityCache, cached.key == key {
+            return (cached.resolutions, cached.frameRates)
+        }
+        let resolutions = CameraManager.Resolution.allCases.filter {
+            CameraManager.supports(resolution: $0, fps: 30, lens: selectedLens)
+        }.map { $0.rawValue }
+        let frameRates = [30, 60].filter {
+            CameraManager.supports(resolution: resolution, fps: Int32($0),
+                                   lens: selectedLens)
+        }
+        capabilityCache = (key, resolutions, frameRates)
+        return (resolutions, frameRates)
     }
 
     private func applyFocus() {
@@ -440,6 +477,8 @@ final class Streamer: ObservableObject {
             }
         case "flip":
             flipCamera()
+        case "set_format":
+            applyRemoteFormat(command)
         case "selectLens":
             if let label = command["label"] as? String,
                let lens = availableLenses.first(where: { $0.label == label }),
@@ -450,6 +489,43 @@ final class Streamer: ObservableObject {
         default:
             break
         }
+    }
+
+    /// Remote format change (resolution / frame rate / codec) from the
+    /// plugin's web panel. Any subset of fields may be present; the combo
+    /// is validated against the current lens and ignored if unsupported —
+    /// the STATE snapshot advertises what's valid, so a remote UI only
+    /// offers combos that work.
+    private func applyRemoteFormat(_ command: [String: Any]) {
+        var newResolution = resolution
+        var newFps = fps
+        var newCodec = codec
+
+        if let raw = command["resolution"] as? String {
+            guard let parsed = CameraManager.Resolution(rawValue: raw) else { return }
+            newResolution = parsed
+        }
+        if let value = (command["fps"] as? NSNumber)?.intValue {
+            newFps = value
+        }
+        if let raw = command["codec"] as? String {
+            guard let parsed = VideoCodec(rawValue: raw),
+                  VideoEncoder.isSupported(parsed) else { return }
+            newCodec = parsed
+        }
+        guard CameraManager.supports(resolution: newResolution,
+                                     fps: Int32(newFps),
+                                     lens: selectedLens) else { return }
+
+        let formatChanged = newResolution != resolution || newFps != fps
+        let codecChanged = newCodec != codec
+        guard formatChanged || codecChanged else { return }
+        resolution = newResolution
+        fps = newFps
+        codec = newCodec
+        // reconfigure also rebuilds the encoder on a codec-only change
+        // (it compares the running encoder's codec itself).
+        reconfigureLiveCapture(formatChanged: formatChanged)
     }
 
     /// Switches front/back if a lens on the other side supports the

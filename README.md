@@ -77,7 +77,8 @@ blanks the source.
 - **Live camera controls**, both on the phone (full-screen view with pinch
   zoom, tap-to-focus, exposure, focus lock, flashlight, camera flip) and
   **from your computer** via a browser panel at
-  `http://localhost:9980` (zoom / exposure / focus / flashlight / flip).
+  `http://localhost:9980` (zoom / exposure / focus / flashlight / flip,
+  plus switching lens, resolution, frame rate, and codec mid-stream).
 - **Remote start.** With the app open, OBS can start the camera for you —
   automatically when the source connects, or from a button in the source's
   properties or the browser panel. Siri works too: *"Start streaming with

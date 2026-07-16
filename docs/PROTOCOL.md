@@ -99,7 +99,16 @@ Camera remote control. Payload: UTF-8 JSON, one command per packet:
 { "cmd": "flip" }
 { "cmd": "start_stream" }
 { "cmd": "stop_stream" }
+{ "cmd": "set_format", "resolution": "1080p", "fps": 60, "codec": "hevc" }
 ```
+
+`set_format` switches the capture format mid-stream; any subset of its
+fields may be present. The app validates the combination against the
+active lens (the STATE snapshot advertises the valid choices in
+`resolutions` / `frameRates` / `codecs`, plus the current `resolution` /
+`fps` / `codec`) and ignores unsupported requests. A format change flows
+through the normal live-reconfigure path: new VIDEO_CONFIG, fresh
+keyframe, decoder reset on a codec change.
 
 Unknown commands are ignored, so new ones can be added compatibly. The
 plugin's embedded web panel (http://localhost:9980) generates these.
