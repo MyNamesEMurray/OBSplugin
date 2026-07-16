@@ -48,7 +48,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libobs-dev \
+          sudo apt-get install -y cmake pkg-config libobs-dev qt6-base-dev \
             libavcodec-dev libavutil-dev
 
       - name: Configure
@@ -91,10 +91,16 @@ jobs:
           ref: ${{ env.OBS_REF }}
           path: obs-studio
 
-      - name: Download OBS prebuilt dependencies (FFmpeg)
+      - name: Download OBS prebuilt dependencies (FFmpeg, Qt6)
         run: |
           curl -L -o deps.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-${{ env.DEPS_TAG }}-x64.zip"
           7z x deps.zip -oobs-deps
+          # Qt6 (same bundle OBS itself builds with): needed only for the
+          # plugin's status-bar/dock UI. The plugin links Qt but resolves
+          # obs-frontend-api symbols at runtime, so libobs alone still
+          # suffices for the rest of the build.
+          curl -L -o deps-qt6.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-qt6-${{ env.DEPS_TAG }}-x64.zip"
+          7z x -y deps-qt6.zip -oobs-deps
 
       - name: Cache libobs build
         id: cache-libobs
@@ -117,8 +123,10 @@ jobs:
       - name: Build plugin
         run: |
           cmake -S obs-plugin -B plugin-build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
             -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config;${{ github.workspace }}\obs-studio\deps\w32-pthreads" `
             -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib;${{ github.workspace }}\obs-build\deps\w32-pthreads\Release\w32-pthreads.lib" `
+            -DOBS_FRONTEND_API_HINT="${{ github.workspace }}\obs-studio\frontend\api;${{ github.workspace }}\obs-studio\UI\obs-frontend-api" `
             -DFFMPEG_INCLUDE_DIR="${{ github.workspace }}\obs-deps\include" `
             -DAVCODEC_LIBRARY="${{ github.workspace }}\obs-deps\lib\avcodec.lib" `
             -DAVUTIL_LIBRARY="${{ github.workspace }}\obs-deps\lib\avutil.lib"
@@ -172,11 +180,14 @@ jobs:
           ref: ${{ env.OBS_REF }}
           path: obs-studio
 
-      - name: Download OBS prebuilt dependencies (FFmpeg)
+      - name: Download OBS prebuilt dependencies (FFmpeg, Qt6)
         run: |
           curl -L -o deps.tar.xz "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/macos-deps-${{ env.DEPS_TAG }}-universal.tar.xz"
           mkdir obs-deps
           tar -xJf deps.tar.xz -C obs-deps
+          # Qt6 for the status-bar/dock UI (see the Windows job note).
+          curl -L -o deps-qt6.tar.xz "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/macos-deps-qt6-${{ env.DEPS_TAG }}-universal.tar.xz"
+          tar -xJf deps-qt6.tar.xz -C obs-deps
 
       # "macos" in the key: cache keys are not runner-scoped, and the
       # Windows job already uses libobs-<ref>-<tag> for its MSVC build.
@@ -213,6 +224,8 @@ jobs:
             -DCMAKE_C_FLAGS="-Wall -Wextra -Werror" \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -DOBS_FRONTEND_API_HINT="$PWD/obs-studio/frontend/api;$PWD/obs-studio/UI/obs-frontend-api" \
             -DLIBOBS_INCLUDE_DIR="$PWD/obs-studio/libobs;$PWD/obs-build/config" \
             -DLIBOBS_LIBRARY="$PWD/obs-build/libobs/Release/libobs.framework" \
             -DFFMPEG_INCLUDE_DIR="$PWD/obs-deps/include" \

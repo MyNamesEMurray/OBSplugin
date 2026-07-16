@@ -1006,7 +1006,7 @@ static void stats_tick(struct ios_camera_source *s, struct client_state *c)
 	s->stat_connected = true;
 	s->stat_frames = c->frames_output;
 	s->stat_bytes = c->video_bytes;
-	snprintf(s->stat_device, sizeof(s->stat_device), "%s", c->name);
+	snprintf(s->stat_device, sizeof(s->stat_device), "%.63s", c->name);
 	pthread_mutex_unlock(&s->status_mutex);
 }
 

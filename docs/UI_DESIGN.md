@@ -186,6 +186,18 @@ The web panel deliberately shows the **plugin's** connection/latency status
 (the PC's vantage point), not the phone app's status — but styled with the
 identical pill, palette and control language.
 
+### 6.4 OBS status bar & dock
+
+A third surface lives inside OBS itself (Qt, `frontend-ui.cpp`): a
+one-line health readout in the main window's status bar
+(`LensLink: 60 fps · 11.9 Mb/s · 43 ms`, hidden when nothing is
+connected; "ready (camera idle)" during standby) and a dockable
+**LensLink** panel listing every source with its device, status, and
+rates. These render with OBS's native theme rather than our palette —
+inside OBS's chrome, OBS's design language wins; our vocabulary (the
+status wording, `fps · Mb/s · ms` ordering, monospace-style numerals)
+is what carries over.
+
 ---
 
 ## 7. Motion
