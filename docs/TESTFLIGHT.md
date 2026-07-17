@@ -38,7 +38,8 @@ repository secret**, four times:
 ## 4. Run it
 
 - Manually: **Actions → TestFlight → Run workflow**, or
-- Automatically: it runs on every **published release**.
+- Automatically: it runs for every release **whose merge touched
+  `ios-app/`** (plugin-only releases don't re-upload an unchanged app).
 
 The first upload takes a few extra minutes of App Store Connect processing;
 after that the build appears under the app's **TestFlight** tab. Add

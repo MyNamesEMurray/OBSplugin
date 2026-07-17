@@ -33,12 +33,17 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libobs-dev \
+          sudo apt-get install -y cmake pkg-config libobs-dev qt6-base-dev \
             libavcodec-dev libavutil-dev
 
+      # The grep guard: the status-bar/dock UI degrades *silently* when Qt6
+      # or obs-frontend-api.h is missing (that's how releases shipped
+      # without it once) — a release build must fail instead.
       - name: Build
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          set -o pipefail
+          cmake -B build -DCMAKE_BUILD_TYPE=Release | tee configure.log
+          grep -q "frontend UI enabled" configure.log
           cmake --build build
         working-directory: obs-plugin
 
@@ -73,10 +78,14 @@ jobs:
           ref: ${{ env.OBS_REF }}
           path: obs-studio
 
-      - name: Download OBS prebuilt dependencies (FFmpeg)
+      - name: Download OBS prebuilt dependencies (FFmpeg, Qt6)
         run: |
           curl -L -o deps.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-${{ env.DEPS_TAG }}-x64.zip"
           7z x deps.zip -oobs-deps
+          # Qt6 (same bundle OBS itself builds with): needed only for the
+          # plugin's status-bar/dock UI — keep in sync with build.yml.
+          curl -L -o deps-qt6.zip "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/windows-deps-qt6-${{ env.DEPS_TAG }}-x64.zip"
+          7z x -y deps-qt6.zip -oobs-deps
 
       - name: Cache libobs build
         id: cache-libobs
@@ -96,14 +105,23 @@ jobs:
             -DENABLE_AJA=OFF
           cmake --build obs-build --target libobs --config Release
 
+      # The Select-String guard: the status-bar/dock UI degrades *silently*
+      # when Qt6 or obs-frontend-api.h is missing (that's how releases
+      # shipped without it once) — a release build must fail instead.
       - name: Build plugin
         run: |
           cmake -S obs-plugin -B plugin-build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
             -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config;${{ github.workspace }}\obs-studio\deps\w32-pthreads" `
             -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib;${{ github.workspace }}\obs-build\deps\w32-pthreads\Release\w32-pthreads.lib" `
+            -DOBS_FRONTEND_API_HINT="${{ github.workspace }}\obs-studio\frontend\api;${{ github.workspace }}\obs-studio\UI\obs-frontend-api" `
             -DFFMPEG_INCLUDE_DIR="${{ github.workspace }}\obs-deps\include" `
             -DAVCODEC_LIBRARY="${{ github.workspace }}\obs-deps\lib\avcodec.lib" `
-            -DAVUTIL_LIBRARY="${{ github.workspace }}\obs-deps\lib\avutil.lib"
+            -DAVUTIL_LIBRARY="${{ github.workspace }}\obs-deps\lib\avutil.lib" `
+            | Tee-Object -FilePath configure.log
+          if (-not (Select-String -Quiet -SimpleMatch "frontend UI enabled" -Path configure.log)) {
+            throw "status-bar/dock UI missing from this release build (Qt6/obs-frontend-api not found)"
+          }
           cmake --build plugin-build --config Release
 
       - name: Package (extract into C:\Program Files\obs-studio)
@@ -151,11 +169,14 @@ jobs:
           ref: ${{ env.OBS_REF }}
           path: obs-studio
 
-      - name: Download OBS prebuilt dependencies (FFmpeg)
+      - name: Download OBS prebuilt dependencies (FFmpeg, Qt6)
         run: |
           curl -L -o deps.tar.xz "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/macos-deps-${{ env.DEPS_TAG }}-universal.tar.xz"
           mkdir obs-deps
           tar -xJf deps.tar.xz -C obs-deps
+          # Qt6 for the status-bar/dock UI — keep in sync with build.yml.
+          curl -L -o deps-qt6.tar.xz "https://github.com/obsproject/obs-deps/releases/download/${{ env.DEPS_TAG }}/macos-deps-qt6-${{ env.DEPS_TAG }}-universal.tar.xz"
+          tar -xJf deps-qt6.tar.xz -C obs-deps
 
       # "macos" in the key: cache keys are not runner-scoped, and the
       # Windows job already uses libobs-<ref>-<tag> for its MSVC build.
@@ -185,17 +206,25 @@ jobs:
             -DENABLE_BROWSER=OFF -DENABLE_SCRIPTING=OFF
           cmake --build obs-build --target libobs --config Release
 
+      # The grep guard: the status-bar/dock UI degrades *silently* when Qt6
+      # or obs-frontend-api.h is missing (that's how releases shipped
+      # without it once) — a release build must fail instead.
       - name: Build plugin
         run: |
+          set -o pipefail
           cmake -S obs-plugin -B plugin-build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
+            -DOBS_FRONTEND_API_HINT="$PWD/obs-studio/frontend/api;$PWD/obs-studio/UI/obs-frontend-api" \
             -DLIBOBS_INCLUDE_DIR="$PWD/obs-studio/libobs;$PWD/obs-build/config" \
             -DLIBOBS_LIBRARY="$PWD/obs-build/libobs/Release/libobs.framework" \
             -DFFMPEG_INCLUDE_DIR="$PWD/obs-deps/include" \
             -DAVCODEC_LIBRARY="$PWD/obs-deps/lib/libavcodec.dylib" \
-            -DAVUTIL_LIBRARY="$PWD/obs-deps/lib/libavutil.dylib"
+            -DAVUTIL_LIBRARY="$PWD/obs-deps/lib/libavutil.dylib" \
+            | tee configure.log
+          grep -q "frontend UI enabled" configure.log
           cmake --build plugin-build
 
       # Ad-hoc signature only: without an Apple Developer ID the bundle

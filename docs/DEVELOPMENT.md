@@ -64,10 +64,13 @@ protection on `main`).
 
 ## Releases
 
-Every merge to `main` that touches `obs-plugin/` or `ios-app/`
-automatically tags a version and publishes a GitHub Release with
-ready-to-install builds (Windows plugin zip, Linux plugin tarball, unsigned
-IPA), via [`.github/workflows/auto-release.yml`](../.github/workflows/auto-release.yml).
+Every merge to `main` that touches `obs-plugin/`, `ios-app/`, or
+`installer/` automatically tags a version and publishes a GitHub Release
+with ready-to-install builds (Windows plugin zip, Linux plugin tarball,
+unsigned IPA), via
+[`.github/workflows/auto-release.yml`](../.github/workflows/auto-release.yml).
+The TestFlight upload piggybacks on that release, but only when the merge
+touched `ios-app/`.
 
 The bump is a **git trailer** on its own line in any commit of the merged
 PR (case-insensitive):
