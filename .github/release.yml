@@ -9,7 +9,10 @@
 changelog:
   exclude:
     authors:
+      # Both spellings: the generated notes attribute bot PRs to the
+      # "[bot]" login (v1.6.0 proved plain "dependabot" alone misses it).
       - dependabot
+      - dependabot[bot]
   categories:
     - title: New
       labels:
