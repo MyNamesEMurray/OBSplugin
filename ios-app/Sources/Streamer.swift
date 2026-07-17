@@ -554,9 +554,13 @@ final class Streamer: ObservableObject {
     // camera on the phone" button, or the web panel. The camera never
     // runs in standby; iOS suspends the listener with the app, so this
     // only works while LensLink is on screen (open it by hand, by Siri,
-    // or via lenslink://start).
+    // or via lenslink://start). Auto-lock counts as leaving the screen,
+    // so standby also holds the idle timer — otherwise the phone locks
+    // itself a few minutes after OBS disconnects and remote start
+    // silently dies (ContentView dims the screen to keep this cheap).
 
-    private var standbyActive = false
+    /// Published for ContentView's standby dim overlay.
+    @Published private(set) var standbyActive = false
     /// Scene foreground state, driven by LensLinkApp.
     private var isForeground = false
     /// A screen broadcast owns port 9979; standby must release it.
@@ -586,16 +590,25 @@ final class Streamer: ObservableObject {
         } else if !want {
             stopStandby()
         }
+        updateIdleTimer()
     }
 
     private func stopStandby() {
         guard standbyActive else { return }
         standbyActive = false
+        updateIdleTimer()
         client.setStandby(false)
         client.disconnect()
         if status == .standby {
             status = .idle
         }
+    }
+
+    /// The phone must not auto-lock while it's needed: streaming (iOS
+    /// stops background camera capture) or standby (locking suspends the
+    /// listener, and remote start can't reach a suspended app).
+    private func updateIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = isStreaming || standbyActive
     }
 
     // MARK: - Remote control (from the OBS plugin / web panel)
@@ -787,7 +800,7 @@ final class Streamer: ObservableObject {
 
         isStreaming = true
         status = .connecting
-        UIApplication.shared.isIdleTimerDisabled = true
+        updateIdleTimer()
 
         camera.start()
         resetCameraControls()
@@ -895,7 +908,7 @@ final class Streamer: ObservableObject {
         guard isStreaming else { return }
         isStreaming = false
         status = .idle
-        UIApplication.shared.isIdleTimerDisabled = false
+        updateIdleTimer()
 
         adaptiveTask?.cancel()
         adaptiveTask = nil
@@ -968,6 +981,7 @@ final class Streamer: ObservableObject {
             // The listener itself died (e.g. the port is taken); standby
             // can't work until something changes.
             standbyActive = false
+            updateIdleTimer()
             client.disconnect()
             status = .error(message)
         }

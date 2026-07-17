@@ -19,6 +19,16 @@ struct ContentView: View {
     // screen stays short — see that file for why.
     @State private var showOptions = false
 
+    // Standby keeps the phone awake (see Streamer.updateIdleTimer) so
+    // remote start stays reachable; this dim overlay is what makes that
+    // affordable — same pattern as StreamingView's, on a longer fuse
+    // because this screen is also where settings get changed.
+    @State private var dimmed = false
+    @State private var lastInteraction = Date()
+    @State private var previousBrightness: CGFloat = UIScreen.main.brightness
+
+    private static let dimAfterSeconds: TimeInterval = 60
+
     var body: some View {
         if streamer.isStreaming {
             StreamingView()
@@ -33,21 +43,28 @@ struct ContentView: View {
     // GitHub/version). The banner is the title (no NavigationView: nothing
     // is ever pushed, and the wordmark replaces the large-title text).
     private var settingsForm: some View {
-        Form {
-            bannerHeader
-            connectSection
-            cameraSection
-            screenMirrorSection
-            tailSection
-        }
-        .tint(Theme.accent)
-        .sheet(isPresented: $showOptions) {
-            OptionsView()
-                .environmentObject(streamer)
+        ZStack {
+            Form {
+                bannerHeader
+                connectSection
+                cameraSection
+                screenMirrorSection
+                tailSection
+            }
+            .tint(Theme.accent)
+            .sheet(isPresented: $showOptions) {
+                OptionsView()
+                    .environmentObject(streamer)
+            }
+
+            if dimmed {
+                dimOverlay
+            }
         }
         .onAppear {
             wifiIP = NetworkInfo.wifiIPAddress()
             refreshCapabilities()
+            lastInteraction = Date()
         }
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.willEnterForegroundNotification)) { _ in
@@ -58,6 +75,62 @@ struct ContentView: View {
             streamer.clampCaptureSettings()
             refreshCapabilities()
         }
+        // Any settings change or connection event counts as activity;
+        // scrolling alone doesn't, which the long fuse absorbs.
+        .onReceive(streamer.objectWillChange) { _ in
+            if !dimmed {
+                lastInteraction = Date()
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if streamer.standbyActive && !dimmed &&
+                    Date().timeIntervalSince(lastInteraction) > Self.dimAfterSeconds {
+                    dim()
+                } else if !streamer.standbyActive && dimmed {
+                    // Standby ended underneath the overlay (remote start
+                    // fired, toggle turned off, port lost) — wake up.
+                    undim()
+                }
+            }
+        }
+        .onDisappear {
+            if dimmed {
+                UIScreen.main.brightness = previousBrightness
+                dimmed = false
+            }
+        }
+    }
+
+    private func dim() {
+        previousBrightness = UIScreen.main.brightness
+        UIScreen.main.brightness = 0.05
+        withAnimation { dimmed = true }
+    }
+
+    private func undim() {
+        UIScreen.main.brightness = previousBrightness
+        withAnimation { dimmed = false }
+        lastInteraction = Date()
+    }
+
+    /// Near-black tap-to-wake overlay (StreamingView's, in standby amber):
+    /// the phone stays awake so OBS can start the camera, without the
+    /// screen-on battery cost.
+    private var dimOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.96).ignoresSafeArea()
+            VStack(spacing: 8) {
+                Image(systemName: "video.fill")
+                    .foregroundColor(Theme.connectAmber.opacity(0.6))
+                Text("Ready for remote start — tap to wake")
+                    .font(.footnote)
+                    .foregroundColor(.gray)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { undim() }
     }
 
     private func refreshCapabilities() {

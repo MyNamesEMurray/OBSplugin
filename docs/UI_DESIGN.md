@@ -61,6 +61,12 @@ and can start the camera. It shares the amber of Connecting — both mean
 while live, the panel ends in a red **Stop camera** button (Stop stays
 the one destructive control, mirroring the app's red Stop chip).
 
+While remote start is armed the phone holds its idle timer (auto-lock
+would suspend the listener and kill remote start), so the Setup screen
+reuses the Live screen's near-black tap-to-wake dim overlay — on a
+60-second fuse instead of 10, with the icon in `connectAmber` rather
+than `liveGreen` (armed, not live).
+
 The status **word and colour are defined once** (`Streamer.Status.displayName`
 / `.tint` in the app) and reused by every view; the web panel maps the
 plugin's status string to the same palette.

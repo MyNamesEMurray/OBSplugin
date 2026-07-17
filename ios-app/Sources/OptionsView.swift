@@ -15,7 +15,7 @@ struct OptionsView: View {
                     Toggle("Remote start from OBS",
                            isOn: $streamer.remoteStartEnabled)
                 } footer: {
-                    Text("While the app is open and idle, OBS can start the camera for you — automatically when its source connects, or from the source's \"Start camera on the phone\" button. Siri works too: \"Start streaming with LensLink.\"")
+                    Text("While the app is open and idle, OBS can start the camera for you — automatically when its source connects, or from the source's \"Start camera on the phone\" button. The phone stays awake while it waits (the screen dims after a minute — tap to wake); locking it or leaving the app ends remote start. Siri works too: \"Start streaming with LensLink.\"")
                 }
 
                 Section {
