@@ -10,6 +10,7 @@
 
 #include "net-compat.h"
 #include "web-control.h"
+#include "plugin-settings.h"
 
 #define MAX_REQUEST (16 * 1024)
 #define MAX_CONTROL_BODY 512
@@ -23,9 +24,15 @@ static const char control_page[] =
 	"<!doctype html><html><head><meta charset='utf-8'>"
 	"<meta name='viewport' content='width=device-width,initial-scale=1'>"
 	"<title>LensLink Control</title><style>"
-	":root{--accent:#3D7BFF;--live:#30D158;--amber:#FF9F0A;--red:#FF453A;"
-	"--grey:#8E8E93;--bg:#0E0F13;--glass:rgba(28,30,38,0.72);"
+	/* color-scheme makes the browser's own chrome — most visibly the
+	 * native dropdown popup of a <select> — render dark; without it the
+	 * popup was a light list inheriting white text (invisible until
+	 * hovered). The explicit option colors cover browsers that style
+	 * options directly instead. */
+	":root{color-scheme:dark;--accent:#3D7BFF;--live:#30D158;--amber:#FF9F0A;"
+	"--red:#FF453A;--grey:#8E8E93;--bg:#0E0F13;--glass:rgba(28,30,38,0.72);"
 	"--hair:rgba(255,255,255,0.08);--txt:#fff;--txt2:rgba(235,235,245,0.6)}"
+	"option{background:#1c1e26;color:#fff}"
 	"*{box-sizing:border-box}"
 	"body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);"
 	"color:var(--txt);max-width:440px;margin:0 auto;padding:20px 16px}"
@@ -72,6 +79,10 @@ static const char control_page[] =
 	"<header><h1>LensLink</h1>"
 	"<div class='pill'><span class='dot' id='dot'></span>"
 	"<span id='status'>connecting&hellip;</span></div></header>"
+	/* Source tabs: hidden until more than one camera source is live.
+	 * Every API call carries the selected source's ?src= id. */
+	"<div class='seg' id='srctabs' "
+	"style='display:none;margin-bottom:12px;flex-wrap:wrap'></div>"
 	/* Shown instead of the controls for a screen-mirror source. */
 	"<div class='panel' id='screennote' style='display:none'>"
 	"Screen mirroring &mdash; camera controls don&rsquo;t apply.</div>"
@@ -186,11 +197,13 @@ static const char control_page[] =
 	"shutrowEl=$('shutrow'),shutEl=$('shut'),shutvEl=$('shutv'),"
 	"wbrowEl=$('wbrow'),awbEl=$('awb'),wblEl=$('wbl'),wbtempEl=$('wbtemp'),"
 	"wbvEl=$('wbv'),wbhintEl=$('wbhint'),"
-	"microwEl=$('microw'),micselEl=$('micsel');"
+	"microwEl=$('microw'),micselEl=$('micsel'),srctabsEl=$('srctabs');"
 	"const COL={live:'#30D158',amber:'#FF9F0A',red:'#FF453A',grey:'#8E8E93'};"
+	/* Selected source id (from /api/sources); every request carries it. */
+	"let src=null;const q=()=>src==null?'':('?src='+src);"
 	"let lastTouch=0;const touch=()=>lastTouch=Date.now();"
 	"const send=o=>{touch();"
-	"fetch('/api/control',{method:'POST',body:JSON.stringify(o)})};"
+	"fetch('/api/control'+q(),{method:'POST',body:JSON.stringify(o)})};"
 	"const deb=(f,ms)=>{let t;return(...a)=>{clearTimeout(t);"
 	"t=setTimeout(()=>f(...a),ms)}};"
 	"const dz=deb(()=>send({cmd:'zoom',value:+zoomEl.value}),60);"
@@ -219,7 +232,7 @@ static const char control_page[] =
 	"function asUI(on){autoStart=on;const c=on?'primary toggle on':'primary toggle';"
 	"asbtn1El.className=c;asbtn2El.className=c}"
 	"const toggleAS=()=>{touch();asUI(!autoStart);"
-	"fetch('/api/autostart',{method:'POST',body:JSON.stringify({on:autoStart})})};"
+	"fetch('/api/autostart'+q(),{method:'POST',body:JSON.stringify({on:autoStart})})};"
 	"asbtn1El.onclick=toggleAS;asbtn2El.onclick=toggleAS;"
 	/* Rebuild a select only when its option list changes (same pattern as
 	 * the lens picker); values stay raw, labels get a formatter. */
@@ -271,7 +284,23 @@ static const char control_page[] =
 	"if(t.includes('wait')||t.includes('trying')||t.includes('dial'))return COL.amber;"
 	"return COL.grey}"
 	"async function poll(){try{"
-	"const s=await(await fetch('/api/status')).json();"
+	/* Source list first: pick/keep a selection, tabs when >1. */
+	"const sj=await(await fetch('/api/sources')).json();"
+	"const list=sj.sources||[];"
+	"if(!list.length){statusEl.textContent='no LensLink sources';"
+	"dotEl.style.background=COL.grey;srctabsEl.style.display='none';"
+	"panelEl.style.display='none';startpanelEl.style.display='none';"
+	"screennoteEl.style.display='none';return}"
+	"if(src==null||!list.some(x=>x.id===src))src=list[0].id;"
+	"srctabsEl.style.display=list.length>1?'':'none';"
+	"const sk=list.map(x=>x.id+':'+x.name).join('|')+'@'+src;"
+	/* textContent, not innerHTML: source names are user data. */
+	"if(srctabsEl.dataset.k!==sk){srctabsEl.dataset.k=sk;"
+	"srctabsEl.replaceChildren(...list.map(x=>{"
+	"const b=document.createElement('button');b.textContent=x.name;"
+	"b.className=x.id===src?'on':'';"
+	"b.onclick=()=>{src=x.id;lastTouch=0;poll()};return b}))}"
+	"const s=await(await fetch('/api/status'+q())).json();"
 	"statusEl.textContent=s.status||'idle';dotEl.style.background=statusColor(s.status);"
 	/* Live controls only when a camera stream is actually connected;
 	 * standby gets the Start panel; screen mirror gets the note; not
@@ -282,7 +311,7 @@ static const char control_page[] =
 	"if(typeof s.autoStart==='boolean'&&Date.now()-lastTouch>2000)"
 	"asUI(s.autoStart);"
 	"if(s.screen||s.standby||!s.connected)return;"
-	"const st=await(await fetch('/api/state')).json();"
+	"const st=await(await fetch('/api/state'+q())).json();"
 	/* Don't fight the operator's hand: only mirror app state when the panel
 	 * hasn't been touched for a couple of seconds. */
 	"if(Date.now()-lastTouch>2000&&typeof st.zoom==='number'){"
@@ -344,8 +373,42 @@ struct web_control {
 	volatile bool stop;
 	socket_t listener;
 	uint16_t port;
-	struct ios_camera_source *source;
 };
+
+/* One server, many sources. The registry maps small stable ids (what
+ * ?src= carries) to live sources; handlers resolve a source and use it
+ * entirely under the mutex, so once unregister returns, no request can
+ * touch that source again. Registration happens on the UI thread;
+ * lookups on the (single) web thread. */
+#define WC_MAX_SOURCES 16
+
+static struct {
+	pthread_mutex_t mutex;
+	struct web_control *server;
+	struct {
+		int id;
+		struct ios_camera_source *src;
+	} entries[WC_MAX_SOURCES];
+	size_t count;
+	int next_id;
+} g_reg = {.mutex = PTHREAD_MUTEX_INITIALIZER, .next_id = 1};
+
+/* ?src=<id> on the request line picks a source; no (or an unknown) id
+ * falls back to the first registered one, so single-source setups and
+ * scripts written before multi-source keep working unchanged. Caller
+ * holds g_reg.mutex. */
+static struct ios_camera_source *locked_pick_source(const char *request)
+{
+	const char *nl = strpbrk(request, "\r\n");
+	const char *q = strstr(request, "src=");
+	if (q && nl && q < nl) {
+		int id = atoi(q + 4);
+		for (size_t i = 0; i < g_reg.count; i++)
+			if (g_reg.entries[i].id == id)
+				return g_reg.entries[i].src;
+	}
+	return g_reg.count ? g_reg.entries[0].src : NULL;
+}
 
 static void set_timeouts(socket_t s, int seconds)
 {
@@ -451,7 +514,7 @@ static bool request_is_local(const char *request)
 	return true;
 }
 
-static void handle_client(struct web_control *wc, socket_t client)
+static void handle_client(socket_t client)
 {
 	char request[MAX_REQUEST + 1];
 	size_t have = 0;
@@ -479,85 +542,19 @@ static void handle_client(struct web_control *wc, socket_t client)
 	if (!body)
 		return;
 
-	if (!request_is_local(request)) {
-		respond(client, "403 Forbidden", "text/plain", "forbidden");
-		return;
-	}
-
-	if (strncmp(request, "GET / ", 6) == 0) {
-		respond(client, "200 OK", "text/html; charset=utf-8",
-			control_page);
-		return;
-	}
-
-	if (strncmp(request, "GET /api/state ", 15) == 0) {
-		char state[1024] = {0};
-		ios_camera_copy_state(wc->source, state, sizeof(state));
-		respond(client, "200 OK", "application/json", state);
-		return;
-	}
-
-	if (strncmp(request, "GET /api/status ", 16) == 0) {
-		char status[256] = {0};
-		char escaped[512] = {0};
-		ios_camera_copy_status(wc->source, status, sizeof(status));
-		json_escape(status, escaped, sizeof(escaped));
-
-		char json[768];
-		snprintf(json, sizeof(json),
-			 "{\"status\":\"%s\",\"screen\":%s,\"standby\":%s,"
-			 "\"connected\":%s,\"autoStart\":%s}",
-			 escaped,
-			 ios_camera_is_screen(wc->source) ? "true" : "false",
-			 ios_camera_is_standby(wc->source) ? "true" : "false",
-			 ios_camera_is_connected(wc->source) ? "true" : "false",
-			 ios_camera_auto_start(wc->source) ? "true" : "false");
-		respond(client, "200 OK", "application/json", json);
-		return;
-	}
-
-	if (strncmp(request, "POST /api/autostart", 19) == 0) {
-		/* Body: {"on":true|false}. Toggles the source's auto-start
-		 * property (same value the properties checkbox edits). */
+	/* For POSTs, pull the whole body in before touching the source
+	 * registry — a slow client must never stall register/unregister
+	 * (the OBS UI thread) on our socket reads. */
+	size_t body_offset = (size_t)(body - request);
+	size_t content_length = 0;
+	if (strncmp(request, "POST ", 5) == 0) {
 		const char *cl = find_header(request, "Content-Length");
-		size_t content_length = cl ? (size_t)strtoul(cl, NULL, 10) : 0;
+		content_length = cl ? (size_t)strtoul(cl, NULL, 10) : 0;
 		if (content_length == 0 || content_length > MAX_CONTROL_BODY) {
 			respond(client, "400 Bad Request", "text/plain",
 				"bad length");
 			return;
 		}
-		size_t body_offset = (size_t)(body - request);
-		while (have - body_offset < content_length &&
-		       have < MAX_REQUEST) {
-			int n = (int)recv(client, request + have,
-					  (int)(MAX_REQUEST - have), 0);
-			if (n <= 0)
-				return;
-			have += (size_t)n;
-			request[have] = 0;
-		}
-		if (have - body_offset < content_length) {
-			respond(client, "400 Bad Request", "text/plain",
-				"truncated body");
-			return;
-		}
-		ios_camera_set_auto_start(
-			wc->source,
-			strstr(request + body_offset, "true") != NULL);
-		respond(client, "204 No Content", "text/plain", NULL);
-		return;
-	}
-
-	if (strncmp(request, "POST /api/control", 17) == 0) {
-		const char *cl = find_header(request, "Content-Length");
-		size_t content_length = cl ? (size_t)strtoul(cl, NULL, 10) : 0;
-		if (content_length == 0 || content_length > MAX_CONTROL_BODY) {
-			respond(client, "400 Bad Request", "text/plain",
-				"bad length");
-			return;
-		}
-
-		size_t body_offset = (size_t)(body - request);
 		while (have - body_offset < content_length &&
 		       have < MAX_REQUEST) {
 			int n = (int)recv(client, request + have,
@@ -575,10 +572,120 @@ static void handle_client(struct web_control *wc, socket_t client)
 				"truncated body");
 			return;
 		}
+	}
 
-		ios_camera_enqueue_control(wc->source, request + body_offset,
-					   content_length);
-		respond(client, "204 No Content", "text/plain", NULL);
+	if (!request_is_local(request)) {
+		respond(client, "403 Forbidden", "text/plain", "forbidden");
+		return;
+	}
+
+	if (strncmp(request, "GET / ", 6) == 0) {
+		respond(client, "200 OK", "text/html; charset=utf-8",
+			control_page);
+		return;
+	}
+
+	if (strncmp(request, "GET /api/sources", 16) == 0) {
+		char json[4096];
+		size_t o = (size_t)snprintf(json, sizeof(json),
+					    "{\"sources\":[");
+		pthread_mutex_lock(&g_reg.mutex);
+		for (size_t i = 0; i < g_reg.count && o + 384 < sizeof(json);
+		     i++) {
+			struct ios_camera_source *s = g_reg.entries[i].src;
+			char name[128], esc[280];
+			ios_camera_copy_name(s, name, sizeof(name));
+			json_escape(name, esc, sizeof(esc));
+			o += (size_t)snprintf(
+				json + o, sizeof(json) - o,
+				"%s{\"id\":%d,\"name\":\"%s\","
+				"\"connected\":%s,\"standby\":%s,"
+				"\"screen\":%s}",
+				i ? "," : "", g_reg.entries[i].id, esc,
+				ios_camera_is_connected(s) ? "true" : "false",
+				ios_camera_is_standby(s) ? "true" : "false",
+				ios_camera_is_screen(s) ? "true" : "false");
+		}
+		pthread_mutex_unlock(&g_reg.mutex);
+		snprintf(json + o, sizeof(json) - o, "]}");
+		respond(client, "200 OK", "application/json", json);
+		return;
+	}
+
+	if (strncmp(request, "GET /api/state", 14) == 0) {
+		char state[1024] = {0};
+		pthread_mutex_lock(&g_reg.mutex);
+		struct ios_camera_source *s = locked_pick_source(request);
+		if (s)
+			ios_camera_copy_state(s, state, sizeof(state));
+		pthread_mutex_unlock(&g_reg.mutex);
+		if (!s) {
+			respond(client, "503 Service Unavailable",
+				"text/plain", "no sources");
+			return;
+		}
+		respond(client, "200 OK", "application/json", state);
+		return;
+	}
+
+	if (strncmp(request, "GET /api/status", 15) == 0) {
+		char status[256] = {0};
+		char escaped[512] = {0};
+		char json[768];
+		bool screen = false, standby = false, connected = false;
+		bool auto_start = false;
+
+		pthread_mutex_lock(&g_reg.mutex);
+		struct ios_camera_source *s = locked_pick_source(request);
+		if (s) {
+			ios_camera_copy_status(s, status, sizeof(status));
+			screen = ios_camera_is_screen(s);
+			standby = ios_camera_is_standby(s);
+			connected = ios_camera_is_connected(s);
+			auto_start = ios_camera_auto_start(s);
+		}
+		pthread_mutex_unlock(&g_reg.mutex);
+		if (!s) {
+			respond(client, "503 Service Unavailable",
+				"text/plain", "no sources");
+			return;
+		}
+		json_escape(status, escaped, sizeof(escaped));
+		snprintf(json, sizeof(json),
+			 "{\"status\":\"%s\",\"screen\":%s,\"standby\":%s,"
+			 "\"connected\":%s,\"autoStart\":%s}",
+			 escaped, screen ? "true" : "false",
+			 standby ? "true" : "false",
+			 connected ? "true" : "false",
+			 auto_start ? "true" : "false");
+		respond(client, "200 OK", "application/json", json);
+		return;
+	}
+
+	if (strncmp(request, "POST /api/autostart", 19) == 0) {
+		/* Body: {"on":true|false}. Toggles the source's auto-start
+		 * property (same value the properties checkbox edits). */
+		pthread_mutex_lock(&g_reg.mutex);
+		struct ios_camera_source *s = locked_pick_source(request);
+		if (s)
+			ios_camera_set_auto_start(
+				s,
+				strstr(request + body_offset, "true") != NULL);
+		pthread_mutex_unlock(&g_reg.mutex);
+		respond(client, s ? "204 No Content" : "503 Service Unavailable",
+			"text/plain", s ? NULL : "no sources");
+		return;
+	}
+
+	if (strncmp(request, "POST /api/control", 17) == 0) {
+		pthread_mutex_lock(&g_reg.mutex);
+		struct ios_camera_source *s = locked_pick_source(request);
+		if (s)
+			ios_camera_enqueue_control(s, request + body_offset,
+						   content_length);
+		pthread_mutex_unlock(&g_reg.mutex);
+		respond(client, s ? "204 No Content" : "503 Service Unavailable",
+			"text/plain", s ? NULL : "no sources");
 		return;
 	}
 
@@ -605,15 +712,14 @@ static void *web_thread(void *data)
 		if (client == OBSC_INVALID_SOCKET)
 			continue;
 
-		handle_client(wc, client);
+		handle_client(client);
 		net_close(client);
 	}
 
 	return NULL;
 }
 
-struct web_control *web_control_start(struct ios_camera_source *source,
-				      uint16_t port)
+static struct web_control *server_start(uint16_t port)
 {
 	socket_t listener = socket(AF_INET, SOCK_STREAM, 0);
 	if (listener == OBSC_INVALID_SOCKET)
@@ -632,8 +738,9 @@ struct web_control *web_control_start(struct ios_camera_source *source,
 	if (bind(listener, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
 	    listen(listener, 4) != 0) {
 		blog(LOG_WARNING,
-		     "[lenslink] web control: port %u unavailable "
-		     "(another LensLink Camera source running?)",
+		     "[lenslink] web control: port %u unavailable — is "
+		     "another app using it? The port can be changed in "
+		     "Tools → LensLink Settings",
 		     (unsigned)port);
 		net_close(listener);
 		return NULL;
@@ -644,7 +751,6 @@ struct web_control *web_control_start(struct ios_camera_source *source,
 	struct web_control *wc = bzalloc(sizeof(*wc));
 	wc->listener = listener;
 	wc->port = port;
-	wc->source = source;
 
 	if (pthread_create(&wc->thread, NULL, web_thread, wc) != 0) {
 		net_close(listener);
@@ -658,7 +764,7 @@ struct web_control *web_control_start(struct ios_camera_source *source,
 	return wc;
 }
 
-void web_control_stop(struct web_control *wc)
+static void server_stop(struct web_control *wc)
 {
 	if (!wc)
 		return;
@@ -666,4 +772,78 @@ void web_control_stop(struct web_control *wc)
 	pthread_join(wc->thread, NULL);
 	net_close(wc->listener);
 	bfree(wc);
+}
+
+/* Reconcile the singleton server with the plugin-wide settings and the
+ * registry: running while (enabled && any source), on the settings'
+ * port. The server to stop is detached under the mutex but joined
+ * outside it — a request handler blocked on g_reg.mutex must be able to
+ * finish, or the join would deadlock. */
+void web_control_apply_settings(void)
+{
+	struct web_control *to_stop = NULL;
+	uint16_t port = (uint16_t)lenslink_settings_web_port();
+
+	pthread_mutex_lock(&g_reg.mutex);
+	bool want = lenslink_settings_web_enabled() && g_reg.count > 0;
+	if (g_reg.server && (!want || g_reg.server->port != port)) {
+		to_stop = g_reg.server;
+		g_reg.server = NULL;
+	}
+	bool need_start = want && !g_reg.server;
+	pthread_mutex_unlock(&g_reg.mutex);
+
+	if (to_stop)
+		server_stop(to_stop);
+	if (!need_start)
+		return;
+
+	struct web_control *wc = server_start(port);
+	if (!wc)
+		return;
+	pthread_mutex_lock(&g_reg.mutex);
+	if (!g_reg.server && g_reg.count > 0) {
+		g_reg.server = wc;
+		wc = NULL;
+	}
+	pthread_mutex_unlock(&g_reg.mutex);
+	if (wc) /* raced with another apply, or the registry emptied */
+		server_stop(wc);
+}
+
+void web_control_register(struct ios_camera_source *source)
+{
+	pthread_mutex_lock(&g_reg.mutex);
+	for (size_t i = 0; i < g_reg.count; i++) {
+		if (g_reg.entries[i].src == source) {
+			pthread_mutex_unlock(&g_reg.mutex);
+			return;
+		}
+	}
+	if (g_reg.count < WC_MAX_SOURCES) {
+		g_reg.entries[g_reg.count].id = g_reg.next_id++;
+		g_reg.entries[g_reg.count].src = source;
+		g_reg.count++;
+	} else {
+		blog(LOG_WARNING,
+		     "[lenslink] web control: more than %d sources; "
+		     "extra sources won't appear in the panel",
+		     WC_MAX_SOURCES);
+	}
+	pthread_mutex_unlock(&g_reg.mutex);
+}
+
+void web_control_unregister(struct ios_camera_source *source)
+{
+	pthread_mutex_lock(&g_reg.mutex);
+	for (size_t i = 0; i < g_reg.count; i++) {
+		if (g_reg.entries[i].src == source) {
+			memmove(&g_reg.entries[i], &g_reg.entries[i + 1],
+				(g_reg.count - i - 1) *
+					sizeof(g_reg.entries[0]));
+			g_reg.count--;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&g_reg.mutex);
 }

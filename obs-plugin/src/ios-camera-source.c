@@ -153,9 +153,6 @@ struct ios_camera_source {
 	char *control_queue[CONTROL_QUEUE_MAX];
 	int control_count;
 
-	bool web_enabled;
-	struct web_control *web;
-
 	/* Latest camera-state JSON reported by the app (for remote UIs).
 	 * Guarded by status_mutex. */
 	char device_state[1024];
@@ -201,29 +198,21 @@ struct ios_camera_source {
 	int render_path; /* 0 unknown, 1 zero-copy, 2 cpu fallback (logged
 			  * on transition so a black source is explicable) */
 
-	/* Port the running web server bound (0 = not running); lets a
-	 * settings change restart it on the new port. */
-	int web_port;
 };
 
-/* Starts/stops/rebinds the web panel to match the plugin-wide settings.
- * Main/UI thread only (create/update/the settings dialog). */
+/* Keeps this source's registration with the shared web panel in step
+ * with the plugin-wide settings; the panel itself (one server for every
+ * camera source) is reconciled by web_control_apply_settings. Main/UI
+ * thread only (create/update/the settings dialog). */
 static void apply_web_settings(struct ios_camera_source *s)
 {
 	if (s->is_screen_source)
 		return;
-	bool want = lenslink_settings_web_enabled();
-	int port = lenslink_settings_web_port();
-
-	if (s->web && (!want || s->web_port != port)) {
-		web_control_stop(s->web);
-		s->web = NULL;
-		s->web_port = 0;
-	}
-	if (want && !s->web) {
-		s->web = web_control_start(s, (uint16_t)port);
-		s->web_port = s->web ? port : 0;
-	}
+	if (lenslink_settings_web_enabled())
+		web_control_register(s);
+	else
+		web_control_unregister(s);
+	web_control_apply_settings(); /* also picks up port changes */
 }
 
 bool ios_camera_is_screen(struct ios_camera_source *s)
@@ -240,6 +229,12 @@ bool ios_camera_is_standby(struct ios_camera_source *s)
 	bool v = s->standby;
 	pthread_mutex_unlock(&s->status_mutex);
 	return v;
+}
+
+void ios_camera_copy_name(struct ios_camera_source *s, char *buf, size_t size)
+{
+	const char *name = obs_source_get_name(s->source);
+	snprintf(buf, size, "%s", name ? name : "LensLink");
 }
 
 /* ------------------------------------------------------------------ */
@@ -2333,7 +2328,10 @@ static void ios_camera_destroy(void *data)
 	/* First: the frontend UI must not snapshot a freeing source. */
 	health_unregister(s);
 
-	web_control_stop(s->web);
+	/* Same for the web panel: after unregister returns, no request can
+	 * touch this source; the server itself stops with the last one. */
+	web_control_unregister(s);
+	web_control_apply_settings();
 	unhook_audio(s);
 	stop_thread(s);
 

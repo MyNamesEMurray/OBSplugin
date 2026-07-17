@@ -190,14 +190,22 @@ Full-screen black; camera preview `resizeAspect`; content over it:
 ### 6.3 Web control panel
 Dark page (`pageBg`), single centered column (max ~440 px):
 
-1. **Header:** "LensLink Camera" title + status pill (dot + text) mapped from the
+1. **Header:** "LensLink" title + status pill (dot + text) mapped from the
    plugin's status/latency line to the shared palette.
-2. **Controls** in the *same order as the app's Live panel*: Zoom row,
+2. **Source tabs** (segmented control, accent = selected) directly under
+   the header — only when more than one camera source is live. Every API
+   request carries the selected source's `?src=` id; one page controls
+   every phone.
+3. **Controls** in the *same order as the app's Live panel*: Zoom row,
    Exposure row, Focus (AF/Lock + lens slider), then a chip row of
    Flashlight · Lens · Flip.
-3. All controls send `CONTROL` packets; the panel polls `/api/state` and
+4. All controls send `CONTROL` packets; the panel polls `/api/state` and
    mirrors app-side changes (pausing while the operator is interacting), so
    the two stay in lock-step.
+
+The page sets `color-scheme: dark`, so native browser chrome — most
+visibly the popup list of a `<select>` — renders dark instead of a light
+list with inherited white (invisible) text.
 
 The web panel deliberately shows the **plugin's** connection/latency status
 (the PC's vantage point), not the phone app's status — but styled with the

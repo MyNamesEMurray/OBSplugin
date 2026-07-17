@@ -93,7 +93,9 @@ blanks the source.
   and **from your computer** via a browser panel at
   `http://localhost:9980` (the same set: zoom / exposure / manual
   ISO & shutter / focus / white balance / flashlight / flip, plus switching
-  lens, resolution, frame rate, codec, and microphone mid-stream).
+  lens, resolution, frame rate, codec, and microphone mid-stream). With
+  more than one phone connected, the panel shows a tab per source — one
+  page controls them all.
 - **Remote start.** With the app open, OBS can start the camera for you —
   automatically when the source connects, or from a button in the source's
   properties or the browser panel. Siri works too: *"Start streaming with
