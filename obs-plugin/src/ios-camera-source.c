@@ -2558,6 +2558,15 @@ static obs_properties_t *build_properties(struct ios_camera_source *s,
 				screen ? T_("HelpTextScreen") : T_("HelpText"),
 				OBS_TEXT_INFO);
 
+	/* Version footer — the one place a user can read the installed
+	 * plugin version from inside OBS, mirroring the app's own version
+	 * line; bug reports need it. */
+	char version_line[64];
+	snprintf(version_line, sizeof(version_line), "LensLink %s",
+		 LENSLINK_VERSION);
+	obs_properties_add_text(props, "version_info", version_line,
+				OBS_TEXT_INFO);
+
 	return props;
 }
 

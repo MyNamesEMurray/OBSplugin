@@ -48,7 +48,7 @@ bool obs_module_load(void)
 #ifdef LENSLINK_FRONTEND
 	lenslink_frontend_init();
 #endif
-	blog(LOG_INFO, "[lenslink] plugin loaded");
+	blog(LOG_INFO, "[lenslink] LensLink %s loaded", LENSLINK_VERSION);
 	return true;
 }
 

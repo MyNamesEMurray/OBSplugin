@@ -295,6 +295,14 @@ void show_settings_dialog(void *)
 	layout->addWidget(dump);
 	layout->addWidget(bench);
 
+	/* Version footer, mirroring the source-properties one. */
+	auto *version = new QLabel(
+		QStringLiteral("LensLink " LENSLINK_VERSION), &dialog);
+	version->setStyleSheet(
+		QStringLiteral("color: gray; font-size: 11px;"));
+	layout->addSpacing(8);
+	layout->addWidget(version);
+
 	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
 						     QDialogButtonBox::Cancel,
 					     &dialog);

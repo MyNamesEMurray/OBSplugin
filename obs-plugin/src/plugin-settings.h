@@ -29,6 +29,11 @@ void lenslink_settings_shutdown(void);
  * restart (the dialog says so). */
 bool lenslink_settings_gpu_pipeline(void);
 
+/* Injected by CMake — the release tag on CI builds, "dev" otherwise. */
+#ifndef LENSLINK_VERSION
+#define LENSLINK_VERSION "dev"
+#endif
+
 bool lenslink_settings_web_enabled(void);
 int lenslink_settings_web_port(void);
 bool lenslink_settings_diagnostics(void);
