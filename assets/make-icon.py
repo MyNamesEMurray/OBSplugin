@@ -9,6 +9,7 @@ Outputs (run from the repo root):
   assets/icon-1024.png   app icon master (opaque — iOS forbids alpha)
   assets/logo.png        icon on transparent, 512x512
   assets/banner.png      icon + wordmark on transparent (README)
+  assets/social-preview.png  1280x640 GitHub social preview (opaque)
   ios-app/Sources/Assets.xcassets/AppIcon.appiconset/icon-1024.png
 """
 
@@ -145,7 +146,50 @@ def main():
     banner((255, 255, 255, 255), os.path.join(assets, "banner-dark.png"))
     banner((0x16, 0x18, 0x1D, 255), os.path.join(assets, "banner-light.png"))
 
+    # --- GitHub social preview: 1280x640, opaque ------------------------
+    # Rendered when the repo is linked on chat/social sites. Same dark
+    # gradient as the app icon; mark + wordmark centred as a group, one
+    # tagline underneath in textSecondary (white @ 60%).
+    def social_preview(path):
+        pw, ph = 1280, 640
+        img = Image.new("RGB", (pw * S, ph * S))
+        grad = vertical_gradient(ph * S, BG_TOP, BG_BOTTOM)
+        img.paste(grad.resize((pw * S, ph * S)), (0, 0))
+        img = img.convert("RGBA")
+
+        bold = ImageFont.truetype(
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            150 * S)
+        tag_font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            46 * S)
+        d = ImageDraw.Draw(img)
+
+        mark_px = 300 * S
+        gap = 28 * S
+        text_w = d.textlength("LensLink", font=bold)
+        group_w = mark_px + gap + text_w
+        gx = (pw * S - group_w) // 2
+        gy = 268 * S  # group's vertical centre, slightly above middle
+
+        img.alpha_composite(mark_big.resize((mark_px, mark_px), Image.LANCZOS),
+                            (int(gx), int(gy - mark_px // 2)))
+        tx = gx + mark_px + gap
+        d.text((tx, gy), "Lens", font=bold,
+               fill=(255, 255, 255, 255), anchor="lm")
+        d.text((tx + d.textlength("Lens", font=bold), gy), "Link",
+               font=bold, fill=ACCENT + (255,), anchor="lm")
+
+        d.text((pw * S // 2, 500 * S),
+               "iPhone & iPad camera for OBS Studio  —  Wi-Fi or USB",
+               font=tag_font, fill=(255, 255, 255, 153), anchor="mm")
+
+        img.convert("RGB").resize((pw, ph), Image.LANCZOS).save(path)
+
+    social_preview(os.path.join(assets, "social-preview.png"))
+
     print("wrote assets/icon-1024.png, assets/logo.png, assets/banner-*.png,")
+    print("assets/social-preview.png,")
     print("and", os.path.relpath(os.path.join(appiconset, "icon-1024.png"), root))
 
 

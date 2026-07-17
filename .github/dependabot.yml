@@ -1,0 +1,14 @@
+# Keeps the GitHub Actions in our workflows on their latest releases.
+# One grouped PR per week at most — action bumps are almost always
+# mechanical, and the group keeps them from arriving one-by-one.
+# (No pip/npm ecosystems: the Python workflow scripts install their two
+# deps ad hoc, and there's no manifest for Dependabot to watch.)
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
