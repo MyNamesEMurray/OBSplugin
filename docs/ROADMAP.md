@@ -66,7 +66,9 @@ you do.*
 ## Feature enhancements (recommended)
 
 Ranked by how much they'd matter to a typical streamer, weighed against
-effort. These extend features that already exist.
+effort. These extend features that already exist. Items 2–8 came out of
+a 2026-07 survey of comparable products (Camo, DroidCam, Elgato Camera
+Hub/EpocCam, Continuity Camera, iVCam/Iriun, NDI HX Camera/Larix).
 
 ### 1. Optional pairing & encryption — close the trusted-LAN caveat
 The README honestly says the stream is unencrypted and intended for
@@ -78,6 +80,69 @@ pinned self-signed cert — would make the app safe on shared networks
 (dorms, offices, event venues). Designed as opt-in ("Require pairing"
 toggle) to keep the zero-config home path frictionless. *Medium effort;
 the right thing to ship before promoting remote start heavily.*
+
+### 2. Tally light on the phone
+Pro rigs treat tally as table stakes, and no phone-webcam app has it.
+The plugin already tracks per-source visibility (it drives "Disconnect
+when this source isn't shown anywhere") and can read program/preview
+state from the frontend API; send it to the app as a new CONTROL
+command (`{"cmd":"tally","state":"live|preview|idle"}` — old apps
+ignore unknown commands, so it's compatible) and surface it on the
+Live screen. UI_DESIGN.md §2 needs a tally state added to the status
+vocabulary. For multi-phone scenes this removes the "which camera am I
+on?" guesswork. *Small effort; the best payoff-per-line in this list.*
+
+### 3. Digital pan/tilt + crop — reframe without touching the rig
+Zoom today is the camera's own, always center-locked. An adjustable
+crop applied on the phone *before* encoding (Camera Hub's signature
+control) lets the operator reframe a mounted phone from the web panel —
+and because the full encode bitrate then covers only the cropped
+region, it reads sharper than cropping in OBS. New CONTROL command with
+a normalized crop rect, STATE carries it back, web panel and Live
+screen get a drag-to-frame control. *Medium effort; the biggest
+quality-of-life gap for the mounted-phone use case this app is built
+around.*
+
+### 4. 10-bit HEVC + HDR (HLG/PQ)
+iPhones capture HDR by default; the current 8-bit NV12 pipeline throws
+that away, and DroidCam already ships 10-bit HDR transfer. App: 10-bit
+capture format + HEVC Main-10 in `VideoEncoder`; protocol: VIDEO_CONFIG
+gains colour metadata (primaries/transfer/matrix); plugin: map to
+P010 + OBS's HDR colour handling (OBS 28+), including the GPU pipeline's
+per-backend texture formats. Ship with a sensible SDR default — Twitch
+is still SDR, so HDR mainly pays off for YouTube and local recording.
+*Large effort across all three layers; the headline video-quality
+differentiator.*
+
+### 5. Apple Log capture (after item 4)
+On iPhone 15 Pro and later the camera can capture in Apple Log
+(`AVCaptureColorSpace.appleLog`); streamers grade it with a LUT in OBS.
+Once the 10-bit path exists this is mostly a capture-format toggle plus
+correct colour tagging, gated to devices that report support. Nothing
+else in this market offers it. *Small effort once item 4 ships.*
+
+### 6. Voice isolation for the phone mic
+The mic features send the raw microphone feed; iOS's built-in
+voice-processing pipeline (echo cancellation + noise suppression, the
+FaceTime mic sound) is nearly free to enable. An Options toggle in the
+Microphone group, applied to the send-phone-mic path. *Small effort;
+makes the "phone as wireless mic" feature genuinely usable in untreated
+rooms.*
+
+### 7. Manual bitrate cap
+Adaptive bitrate already reacts to congestion, but there's no user
+ceiling. A cap (Options row, plus a live command so the web panel can
+set it) keeps shared/metered networks and multi-phone rigs predictable.
+STATE advertises the cap so remote UIs stay in lock-step. *Small
+effort.*
+
+### 8. Document the control API — Stream Deck without a plugin
+The web panel's endpoints (`/api/state`, `POST /api/control`) are
+stable and already scriptable; what's missing is a docs page listing
+the commands with curl examples and a Stream Deck "Website"-action /
+Bitfocus Companion recipe. That unlocks hardware-button control without
+shipping or maintaining a native Stream Deck plugin — revisit a real
+plugin only if demand shows up. *Docs-only.*
 
 ## How to use this document
 
