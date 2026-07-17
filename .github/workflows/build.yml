@@ -16,6 +16,15 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A new push to a PR supersedes the previous run: cancel the stale one
+# instead of letting its builds (two on 10x-billed macOS runners) finish
+# for a commit nobody can merge anymore. Auto-merge waits on the checks of
+# the new head commit, so cancelling the old run costs nothing. Manual
+# dispatches get a unique group (run_id) and are never cancelled.
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   changes:
     name: Detect changed areas

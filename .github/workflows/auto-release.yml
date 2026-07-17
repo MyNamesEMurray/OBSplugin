@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.bump.outputs.tag }}
+      ios: ${{ steps.bump.outputs.ios }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,8 +59,19 @@ jobs:
           # own commits), so a trailer in any PR commit counts.
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             messages=$(git log -1 --format=%B "$AFTER")
+            changed=$(git diff-tree --no-commit-id --name-only -r "$AFTER")
           else
             messages=$(git log --format=%B "$BEFORE..$AFTER")
+            changed=$(git diff --name-only "$BEFORE" "$AFTER")
+          fi
+
+          # Did this push touch the app? Gates the TestFlight job below —
+          # plugin/installer-only merges still release, but must not upload
+          # a byte-identical app build to TestFlight.
+          if grep -q '^ios-app/' <<< "$changed"; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios=false" >> "$GITHUB_OUTPUT"
           fi
 
           # Trailers only match on their own line (^…$), so prose that
@@ -98,9 +110,14 @@ jobs:
   # trigger: releases created with GITHUB_TOKEN never trigger other
   # workflows (GitHub's recursion guard), so the TestFlight upload would
   # silently not happen for auto-releases.
+  # Only when the push touched ios-app/: the version stream is repo-wide,
+  # but a plugin- or installer-only release would otherwise upload a
+  # byte-identical app (MARKETING_VERSION is static; only the injected
+  # build number changes) — burning a macOS runner, an App Store Connect
+  # build number, and a tester update notification for nothing.
   testflight:
     name: TestFlight
     needs: [version, release]
-    if: needs.version.outputs.tag != ''
+    if: needs.version.outputs.tag != '' && needs.version.outputs.ios == 'true'
     uses: ./.github/workflows/testflight.yml
     secrets: inherit

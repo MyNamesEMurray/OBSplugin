@@ -20,6 +20,13 @@ name: Dependabot Claude Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    # Dependabot here only ever bumps GitHub Actions (.github/dependabot.yml
+    # watches nothing else), so its PRs always touch workflow files. The
+    # filter stops this workflow from creating a skipped run on every other
+    # PR event in the repo. If dependabot.yml ever grows more ecosystems,
+    # widen or drop this filter to match.
+    paths:
+      - ".github/workflows/**"
 
 permissions:
   contents: write # gh pr merge --auto

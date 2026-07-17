@@ -82,11 +82,12 @@ Details (signing, older Xcode): `ios-app/BUILDING.md`.
   branch pushes, and builds only the areas the PR touches (plugin on
   Ubuntu/Windows/macOS with `-Werror`; the app as an unsigned device build
   on macOS). PRs merge automatically once the required checks pass.
-- **Merging to `main` auto-releases** when `obs-plugin/` or `ios-app/`
-  changed: patch bump by default, or the bump named by a git trailer on its
-  own line in any commit of the PR — `Release-Bump: minor`,
+- **Merging to `main` auto-releases** when `obs-plugin/`, `ios-app/`, or
+  `installer/` changed: patch bump by default, or the bump named by a git
+  trailer on its own line in any commit of the PR — `Release-Bump: minor`,
   `Release-Bump: major`, or `Release-Skip: true` (no release). Mind this
-  when writing commit messages.
+  when writing commit messages. The TestFlight upload runs only when the
+  merge touched `ios-app/`.
 - **Never manually dispatch** `testflight.yml` or anything that creates
   releases/tags — a run uploads a real build to TestFlight / publishes a
   real release.
