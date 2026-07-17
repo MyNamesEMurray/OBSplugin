@@ -20,7 +20,7 @@ jobs:
     name: Feedback → issues
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Forks and clones won't have the secrets; skip quietly rather
       # than fail a scheduled run.

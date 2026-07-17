@@ -44,7 +44,7 @@ jobs:
             echo "::notice::CLAUDE_CODE_OAUTH_TOKEN is not set in the *Dependabot* secrets — skipping Claude review (see this workflow's header)."
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         if: steps.guard.outputs.run == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha }}
