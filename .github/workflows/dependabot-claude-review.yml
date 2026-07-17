@@ -24,6 +24,7 @@ on:
 permissions:
   contents: write # gh pr merge --auto
   pull-requests: write # gh pr review --approve
+  issues: write # gh pr comment (PR comments ride the issues API)
 
 jobs:
   review:
@@ -52,6 +53,11 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Without an explicit token the action mints one from the Claude
+          # GitHub App over OIDC — which needs `id-token: write` AND the
+          # app installed on the repo. The workflow's own token with the
+          # permissions declared above is all the gh commands need.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are reviewing Dependabot PR #${{ github.event.pull_request.number }} in ${{ github.repository }} — a dependency version bump.
 
