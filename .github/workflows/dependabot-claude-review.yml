@@ -53,6 +53,10 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The action refuses bot-initiated events by default. Allow
+          # exactly Dependabot — never '*': on a public repo that would
+          # let arbitrary Apps invoke this with prompts they control.
+          allowed_bots: "dependabot,dependabot[bot]"
           # Without an explicit token the action mints one from the Claude
           # GitHub App over OIDC — which needs `id-token: write` AND the
           # app installed on the repo. The workflow's own token with the
