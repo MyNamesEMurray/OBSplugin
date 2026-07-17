@@ -27,8 +27,8 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: LensLink version (bottom of the app's main screen), OBS version, computer OS, phone model + iOS version.
-      placeholder: "LensLink 1.0 (1031), OBS 32.1, Windows 11, iPhone 14 / iOS 18.2"
+      description: App version (bottom of the app's main screen), plugin version (bottom of the LensLink source's properties, or Tools → LensLink Settings), OBS version, computer OS, phone model + iOS version.
+      placeholder: "app 1.0 (1031), plugin 1.6.0, OBS 32.1, Windows 11, iPhone 14 / iOS 18.2"
     validations:
       required: true
   - type: dropdown

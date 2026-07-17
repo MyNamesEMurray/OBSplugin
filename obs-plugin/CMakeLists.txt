@@ -2,7 +2,14 @@
 # is silently misparsed as a search path on older CMake.
 cmake_minimum_required(VERSION 3.18...3.30)
 
-project(lenslink VERSION 0.1.0 LANGUAGES C)
+project(lenslink LANGUAGES C)
+
+# Release version baked into the binary (log line, source-properties
+# footer, settings dialog). CI passes the release tag; anything built
+# without it — dev checkouts, PR CI — honestly says "dev".
+if(NOT DEFINED LENSLINK_VERSION OR LENSLINK_VERSION STREQUAL "")
+  set(LENSLINK_VERSION "dev")
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -67,6 +74,8 @@ add_library(${PROJECT_NAME} MODULE
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs ${FFMPEG_TARGET})
+target_compile_definitions(${PROJECT_NAME}
+                           PRIVATE LENSLINK_VERSION="${LENSLINK_VERSION}")
 
 if(WIN32)
   # dxguid: gpu-frame.c references IID_ID3D11Texture2D/IID_IDXGIKeyedMutex,

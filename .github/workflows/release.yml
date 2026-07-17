@@ -42,7 +42,9 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          cmake -B build -DCMAKE_BUILD_TYPE=Release | tee configure.log
+          version="${{ inputs.tag_name || github.ref_name }}"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DLENSLINK_VERSION="${version#v}" | tee configure.log
           grep -q "frontend UI enabled" configure.log
           cmake --build build
         working-directory: obs-plugin
@@ -110,7 +112,9 @@ jobs:
       # shipped without it once) — a release build must fail instead.
       - name: Build plugin
         run: |
+          $version = "${{ inputs.tag_name || github.ref_name }}".TrimStart("v")
           cmake -S obs-plugin -B plugin-build -G "Visual Studio 17 2022" -A x64 `
+            -DLENSLINK_VERSION="$version" `
             -DCMAKE_PREFIX_PATH="${{ github.workspace }}\obs-deps" `
             -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs;${{ github.workspace }}\obs-build\config;${{ github.workspace }}\obs-studio\deps\w32-pthreads" `
             -DLIBOBS_LIBRARY="${{ github.workspace }}\obs-build\libobs\Release\obs.lib;${{ github.workspace }}\obs-build\deps\w32-pthreads\Release\w32-pthreads.lib" `
@@ -212,8 +216,10 @@ jobs:
       - name: Build plugin
         run: |
           set -o pipefail
+          version="${{ inputs.tag_name || github.ref_name }}"
           cmake -S obs-plugin -B plugin-build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DLENSLINK_VERSION="${version#v}" \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DCMAKE_PREFIX_PATH="$PWD/obs-deps" \
