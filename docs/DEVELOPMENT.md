@@ -88,3 +88,17 @@ can't trigger a bump. Manual releases also work — push any `v*` tag:
 ```bash
 git tag v0.4.0 && git push origin v0.4.0
 ```
+
+### Release notes
+
+Every release page follows a fixed template: a compact **Install** table
+(templated in `release.yml`'s publish job — direct asset links, with
+manual/sideload/USB detail collapsed underneath), then GitHub's generated
+**What's Changed** changelog, shaped by
+[`.github/release.yml`](../.github/release.yml). Label a PR `enhancement`
+or `bug` to sort it into the New/Fixes section; unlabeled PRs land under
+"Other changes", and Dependabot bumps are excluded. Two invariants:
+the install table stays *above* the changelog (the API prepends the
+body), and the "What's Changed" heading must survive verbatim —
+`testflight_whats_to_test.py` splits the body on it to fill TestFlight's
+"What to Test".

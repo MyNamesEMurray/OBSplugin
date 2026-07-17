@@ -1,0 +1,22 @@
+# Shapes the auto-generated "What's Changed" section of release notes.
+# (The install table above it is templated in release.yml's publish job;
+# the "What's Changed" heading itself must survive — the TestFlight
+# "What to Test" script splits the body on it.)
+#
+# Label a PR to sort it: `enhancement` → New, `bug` → Fixes. Unlabeled
+# PRs land under "Other changes". Dependabot bumps are excluded — they
+# only touch CI and never change what users download.
+changelog:
+  exclude:
+    authors:
+      - dependabot
+  categories:
+    - title: New
+      labels:
+        - enhancement
+    - title: Fixes
+      labels:
+        - bug
+    - title: Other changes
+      labels:
+        - "*"

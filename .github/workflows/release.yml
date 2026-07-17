@@ -309,12 +309,20 @@ jobs:
     needs: [plugin-linux, plugin-windows, plugin-macos, ios-app]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || inputs.tag_name != ''
+    env:
+      # Direct-download base for the install table's asset links.
+      DL: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag_name || github.ref_name }}
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
+      # The release-notes template. The install table must stay ABOVE the
+      # generated notes (the API prepends `body`), and the "What's Changed"
+      # heading GitHub generates is load-bearing: testflight_whats_to_test.py
+      # takes everything after it for the TestFlight "What to Test" box.
+      # The changelog itself is shaped by .github/release.yml.
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
@@ -327,36 +335,24 @@ jobs:
             dist/lenslink-linux-x86_64.tar.gz
             dist/LensLink-unsigned.ipa
           body: |
-            ## Installing
+            ## Install
 
-            **Windows (OBS plugin):** download and run
-            `LensLink-installer-windows-x64.exe` — it finds your OBS Studio
-            folder automatically. Then restart OBS. (Prefer doing it by
-            hand? `lenslink-windows-x64.zip` extracts into
-            `C:\Program Files\obs-studio\`.) Built against OBS Studio 32.x.
+            | Platform | Download | Then |
+            |----------|----------|------|
+            | **Windows** | [Installer](${{ env.DL }}/LensLink-installer-windows-x64.exe) | Run it (finds your OBS folder automatically), restart OBS. |
+            | **macOS** | [Installer](${{ env.DL }}/LensLink-installer-macos-universal.pkg) | Right-click → **Open** (not notarized), restart OBS. |
+            | **Linux** | [Plugin tarball](${{ env.DL }}/lenslink-linux-x86_64.tar.gz) | Extract into `~/.config/obs-studio/plugins/`. |
+            | **iPhone / iPad** | [TestFlight beta](https://testflight.apple.com/join/N7Rth6m3) | Installs via TestFlight, updates automatically. |
 
-            **macOS (OBS plugin):** download and open
-            `LensLink-installer-macos-universal.pkg` (right-click → Open the
-            first time — the package is not notarized). It installs into
-            your user OBS plugin folder
-            (`~/Library/Application Support/obs-studio/plugins/`).
-            Then restart OBS.
-            Prefer doing it by hand? Extract `lenslink-macos-universal.zip`
-            into `~/Library/Application Support/obs-studio/plugins/` and
-            clear the quarantine flag:
-            `xattr -dr com.apple.quarantine ~/Library/Application\ Support/obs-studio/plugins/lenslink.plugin`.
-            Universal binary (Apple Silicon + Intel), macOS 13+, built
-            against OBS Studio 32.x.
+            Plugin builds match OBS Studio 32.x; the macOS build is universal (macOS 13+).
 
-            **Linux (OBS plugin):** download `lenslink-linux-x86_64.tar.gz`
-            and extract it into `~/.config/obs-studio/plugins/`.
+            <details>
+            <summary><b>Manual installs, sideloading, USB</b></summary>
 
-            **iOS app:** easiest is the TestFlight beta —
-            https://testflight.apple.com/join/N7Rth6m3 — which updates
-            automatically.
-            Alternatively, download `LensLink-unsigned.ipa` and sideload it
-            with [Sideloadly](https://sideloadly.io) (Windows/macOS, free
-            Apple ID; re-sign every 7 days).
+            - **Windows zip:** extract [`lenslink-windows-x64.zip`](${{ env.DL }}/lenslink-windows-x64.zip) into `C:\Program Files\obs-studio\`, merging folders.
+            - **macOS zip:** extract [`lenslink-macos-universal.zip`](${{ env.DL }}/lenslink-macos-universal.zip) into `~/Library/Application Support/obs-studio/plugins/`, then clear quarantine: `xattr -dr com.apple.quarantine ~/Library/Application\ Support/obs-studio/plugins/lenslink.plugin`
+            - **iOS sideload:** install [`LensLink-unsigned.ipa`](${{ env.DL }}/LensLink-unsigned.ipa) with [Sideloadly](https://sideloadly.io) — free Apple IDs re-sign every 7 days.
+            - **USB on Windows** needs iTunes (it provides Apple's device driver).
 
-            USB mode requires iTunes on Windows (for the Apple Mobile Device
-            Service).
+            Full setup guide: the [README](https://github.com/${{ github.repository }}#install).
+            </details>
