@@ -19,12 +19,15 @@ Continuity Camera, iVCam/Iriun, NDI HX Camera/Larix).
 | P1 | Graduate the GPU decode pipeline | Performance | Small |
 | P1 | Tally light on the phone | Control & workflow | Small |
 | P2 | Digital pan/tilt + crop | Control & workflow | Medium |
+| P2 | Virtual green screen (background removal) | Video & audio quality | Medium |
 | P2 | 10-bit HEVC + HDR (HLG/PQ) | Video & audio quality | Large |
 | P2 | Voice isolation for the phone mic | Video & audio quality | Small |
 | P2 | Document the control API | Control & workflow | Small |
 | P3 | Apple Log capture | Video & audio quality | Small¹ |
 | P3 | Manual bitrate cap | Video & audio quality | Small |
 | P3 | Zero-copy encoder output | Performance | Medium |
+| P3 | iPad: keep streaming in Split View | Control & workflow | Small |
+| P3 | Two lenses at once (multicam) | Video & audio quality | Large |
 
 ¹ once 10-bit HEVC ships.
 
@@ -36,15 +39,18 @@ Continuity Camera, iVCam/Iriun, NDI HX Camera/Larix).
 
 ## Reliability & security
 
-### Thermal & low-power adaptation on the phone — P1, medium
+### Thermal & low-power adaptation on the phone — P1, medium (partially shipped)
 For a mounted phone streaming for hours, the practical limit is heat
 soak: iOS throttles, capture stutters, and at worst the phone shuts
-down mid-stream. Watch `ProcessInfo.thermalState` and step down fps →
-bitrate → resolution at `.serious` (restore when it recovers), surface
-the adaptation in the app status and the OBS source status, and
-optionally respect Low Power Mode. No protocol changes — the app
-already reconfigures capture live for lens switches, and the plugin
-follows VIDEO_CONFIG. *The biggest real-world win for long streams.*
+down mid-stream. **Shipped (PR #63):** the capture device's
+`systemPressureState` is observed per Apple's guidance — `.serious`
+halves the bitrate, `.critical` quarters it and halves the frame rate,
+both restored on recovery, logged to the unified log. **Remaining:**
+surface the adaptation in the app status and the OBS source status
+(today it's silent), consider `ProcessInfo.thermalState` for
+earlier/coarser signals, resolution step-down as the last rung, and
+optionally respect Low Power Mode. *The biggest real-world win for
+long streams.*
 
 ### Optional pairing & encryption — close the trusted-LAN caveat — P1, medium
 The README honestly says the stream is unencrypted and intended for
@@ -96,6 +102,22 @@ default — Twitch is still SDR, so HDR mainly pays off for YouTube and
 local recording. *The headline video-quality differentiator; the only
 large item on the active list, and it unlocks Apple Log below.*
 
+### Virtual green screen — background removal without the screen — P2, medium
+Camo's flagship paid feature, on the free table. Vision's person
+segmentation (`VNGeneratePersonSegmentationRequest`, iOS 15 — exactly
+our floor) mattes a person from plain RGB on any camera, front or rear
+— no depth hardware required. The wire stays untouched: composite the
+removed background to solid chroma green on the phone and let OBS's
+chroma key provide the transparency. Staged: **v1** segmentation +
+green composite behind an Options toggle (per-frame GPU work — quote
+before/after numbers, lean on the thermal mitigation); **v2** the app
+advertises the mode in STATE and the plugin auto-adds a pre-configured
+chroma-key filter to the source, so the phone toggle alone yields a
+keyed subject in the scene; **v3** depth-assisted edge refinement
+(hair, glasses) where TrueDepth or LiDAR exists — this is where
+Apple's "enhancing live video with TrueDepth" techniques earn their
+keep, as an enhancer rather than a requirement.
+
 ### Voice isolation for the phone mic — P2, small
 The mic features send the raw microphone feed; iOS's built-in
 voice-processing pipeline (echo cancellation + noise suppression, the
@@ -109,6 +131,17 @@ On iPhone 15 Pro and later the camera can capture in Apple Log
 Once the 10-bit path exists this is mostly a capture-format toggle plus
 correct colour tagging, gated to devices that report support. Nothing
 else in this market offers it. *Trigger: 10-bit HEVC shipping.*
+
+### Two lenses at once (multicam) — P3, large
+`AVCaptureMultiCamSession` (iOS 13+) can run the front and a rear
+camera simultaneously — one phone feeding a face cam *and* a scene cam
+as two LensLink sources (a second connection with its own HELLO; the
+plugin's per-source device pinning already gives each stream a home).
+No competitor does this. It's P3 for a reason: multicam formats are
+heavily restricted (no 4K, limited fps), the thermal budget for two
+encodes is severe (prototype heat before UI), and the app's
+capture/encode/listener plumbing is currently single-stream. *Trigger:
+real user demand, and a thermal prototype that survives 30 minutes.*
 
 ### Manual bitrate cap — P3, small
 Adaptive bitrate already reacts to congestion, but there's no user
@@ -140,6 +173,17 @@ region, it reads sharper than cropping in OBS. New CONTROL command with
 a normalized crop rect, STATE carries it back, web panel and Live
 screen get a drag-to-frame control. *The biggest quality-of-life gap
 for the mounted-phone use case this app is built around.*
+
+### iPad: keep streaming in Split View — P3, small
+The app streams only while foregrounded (iOS suspends background
+camera capture), which on iPad is a real limitation — a streamer might
+want notes or chat beside the camera app. On supporting iPads,
+`AVCaptureSession.isMultitaskingCameraAccessEnabled` (iOS 16+) lets
+capture continue in Split View / Stage Manager. Gate on
+`isMultitaskingCameraAccessSupported`, keep the listener alive, and
+soften the "foregrounded only" wording where it applies. iPhone
+still suspends — this is iPad-only relief. *Trigger: iPad users
+asking; pairs naturally with the tally light for multi-window rigs.*
 
 ### Document the control API — Stream Deck without a plugin — P2, small
 The web panel's endpoints (`/api/state`, `POST /api/control`) are
