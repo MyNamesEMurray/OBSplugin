@@ -39,11 +39,13 @@ struct OptionsView: View {
                 }
 
                 Section {
+                    Toggle("Allow system video effects",
+                           isOn: $streamer.allowVideoEffects)
                     NavigationLink(destination: CameraDiagnosticsView()) {
                         Text("Camera diagnostics")
                     }
                 } footer: {
-                    Text("The camera's capture formats and which system video effects (Control Center) each supports — copy it into a bug report when an effect you expect is missing.")
+                    Text("Experimental: lets iOS lower the capture frame rate on its own, which the Control Center video effects (Portrait, Studio Light) may require. Off = the frame rate never varies. Takes effect when the camera next starts.\n\nCamera diagnostics lists the capture formats and which effects each supports — copy it into a bug report when an effect you expect is missing.")
                 }
             }
             .navigationTitle("Options")

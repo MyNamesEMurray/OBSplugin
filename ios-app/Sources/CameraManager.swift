@@ -318,16 +318,18 @@ final class CameraManager: NSObject {
     /// keep the throwing API).
     func configure(lens: Lens,
                    resolution: Resolution,
-                   fps: Int32) throws {
+                   fps: Int32,
+                   lockFrameRate: Bool = true) throws {
         try sessionQueue.sync {
             try configureOnQueue(lens: lens, resolution: resolution,
-                                 fps: fps)
+                                 fps: fps, lockFrameRate: lockFrameRate)
         }
     }
 
     private func configureOnQueue(lens: Lens,
                                   resolution: Resolution,
-                                  fps: Int32) throws {
+                                  fps: Int32,
+                                  lockFrameRate: Bool) throws {
         let position = lens.position
         session.beginConfiguration()
         defer { session.commitConfiguration() }
@@ -357,9 +359,16 @@ final class CameraManager: NSObject {
 
         try device.lockForConfiguration()
         device.activeFormat = format
+        // Min duration always caps the rate at the user's choice. The max
+        // (the cadence lock, see PERFORMANCE.md) is normally pinned too —
+        // but the "Allow system video effects" experiment leaves it at the
+        // format default, giving iOS the downward flexibility the Control
+        // Center effects appear to demand on some devices.
         let frameDuration = CMTime(value: 1, timescale: fps)
         device.activeVideoMinFrameDuration = frameDuration
-        device.activeVideoMaxFrameDuration = frameDuration
+        if lockFrameRate {
+            device.activeVideoMaxFrameDuration = frameDuration
+        }
         device.unlockForConfiguration()
         activeDevice = device
 
