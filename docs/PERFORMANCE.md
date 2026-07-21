@@ -151,3 +151,33 @@ memory that the GPU pipeline eliminates outright, roughly halving OBS
 process CPU. Capture→decode latency and decoded fps are measured before
 the pipelines diverge and showed no systematic difference — those are
 set by the network and the phone's encoder, not by the render path.
+
+## Apple capture guidance: what we follow, what we deliberately don't
+
+The iOS capture/encode path was audited against Apple's AVFoundation and
+VideoToolbox guidance for real-time capture. Followed: `RealTime` +
+`AllowFrameReordering=false` (no B-frames) + `PrioritizeEncodingSpeed
+OverQuality` + `MaxFrameDelayCount=1` on the encoder, average bitrate
+with a hard data-rate cap, 2-second keyframes, `alwaysDiscardsLate
+VideoFrames`, session interruption/runtime-error observers with restart,
+and — per the `systemPressureState` docs — thermal/power mitigation:
+at `.serious` the bitrate is halved, at `.critical` it's quartered and
+the frame rate halves (60→30, 30→15), restored when pressure abates.
+
+Deliberate divergences (don't "fix" these without reading this):
+
+- **Frame durations are locked** (min = max = 1/fps). Apple's default
+  lets auto-exposure sag the frame rate in low light, like the Camera
+  app's Auto FPS. A sagging cadence hurts the encoder's rate control,
+  OBS timing, and the lip-sync/latency math; we hold cadence and let the
+  image get noisier instead. The thermal throttle above is the one
+  sanctioned exception.
+- **Video stabilization stays off** (the AVCaptureVideoDataOutput
+  default). Every stabilization mode adds frames of latency; this is a
+  latency-first product. Revisit only as an opt-in.
+- **The wire is 8-bit 4:2:0 video-range** (`420v`); HDR formats are not
+  selected. The whole chain — encoder profile, wire protocol, plugin
+  decode, OBS frame — assumes 8-bit; HDR would need end-to-end work.
+- **Rotation is sensor-native** (`.landscapeRight`, an effective 0°).
+  The AVCaptureConnection docs warn per-frame rotation costs; we never
+  rotate the stream, only the on-phone preview.

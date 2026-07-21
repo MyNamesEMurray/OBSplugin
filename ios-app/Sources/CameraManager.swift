@@ -273,6 +273,46 @@ final class CameraManager: NSObject {
         return format(for: device, resolution: resolution, fps: fps) != nil
     }
 
+    /// Fires on system-pressure (thermal/power) level changes, on the
+    /// main queue — Streamer scales the bitrate down in response.
+    var onSystemPressure: ((AVCaptureDevice.SystemPressureState.Level) -> Void)?
+    private var pressureObservation: NSKeyValueObservation?
+    private var configuredFps: Int32 = 30
+    private var fpsThrottled = false
+
+    private func systemPressureChanged(on device: AVCaptureDevice) {
+        let level = device.systemPressureState.level
+        let line = "System pressure: \(level.rawValue)"
+        Self.log.warning("\(line, privacy: .public)")
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            // Halve the frame rate at .critical (60→30, 30→15) — losing
+            // cadence beats losing the capture to a thermal shutdown —
+            // and restore the configured rate once pressure abates.
+            let throttle = level == .critical
+            if throttle != self.fpsThrottled {
+                self.fpsThrottled = throttle
+                self.applyFrameRate(divisor: throttle ? 2 : 1)
+            }
+        }
+        DispatchQueue.main.async { self.onSystemPressure?(level) }
+    }
+
+    /// sessionQueue only.
+    private func applyFrameRate(divisor: CMTimeValue) {
+        guard let device = activeDevice else { return }
+        let duration = CMTime(value: divisor,
+                              timescale: configuredFps)
+        do {
+            try device.lockForConfiguration()
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+            device.unlockForConfiguration()
+        } catch {
+            print("Frame-rate throttle failed: \(error.localizedDescription)")
+        }
+    }
+
     /// AVCaptureSession requires serialized access; start/stop run on
     /// `sessionQueue`, so configuration hops there too (synchronously, to
     /// keep the throwing API).
@@ -322,6 +362,19 @@ final class CameraManager: NSObject {
         device.activeVideoMaxFrameDuration = frameDuration
         device.unlockForConfiguration()
         activeDevice = device
+
+        // Thermal/power mitigation, per the systemPressureState docs:
+        // frame-rate throttling is Apple's recommended response, and at
+        // .shutdown iOS stops capture on its own (surfaced through the
+        // interruption observers above).
+        configuredFps = fps
+        fpsThrottled = false
+        pressureObservation?.invalidate()
+        pressureObservation = device.observe(\.systemPressureState,
+                                             options: [.new]) {
+            [weak self] observedDevice, _ in
+            self?.systemPressureChanged(on: observedDevice)
+        }
 
         let output = AVCaptureVideoDataOutput()
         output.videoSettings = [

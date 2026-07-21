@@ -496,6 +496,22 @@ final class Streamer: ObservableObject {
                 self?.handleClientState(state)
             }
         }
+        camera.onSystemPressure = { [weak self] level in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // .serious halves the bitrate; .critical quarters it (on
+                // top of CameraManager halving the frame rate). The
+                // adaptive loop applies the cap within a second and ramps
+                // back up after recovery.
+                switch level {
+                case .serious: self.thermalBitrateScale = 0.5
+                case .critical: self.thermalBitrateScale = 0.25
+                default: self.thermalBitrateScale = 1.0
+                }
+                print("System pressure \(level.rawValue) -> "
+                      + "bitrate scale \(self.thermalBitrateScale)")
+            }
+        }
         client.onDiscoveryChange = { [weak self] discoverable in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -859,6 +875,10 @@ final class Streamer: ObservableObject {
     /// recover slowly (+10%/10s of clean streaming) up to the target.
     private var adaptiveTask: Task<Void, Never>?
 
+    /// 1.0 normally; lowered under system pressure (thermal/power) so
+    /// the encoder and radio shed load before iOS shuts capture down.
+    private var thermalBitrateScale = 1.0
+
     private func startAdaptiveBitrate(target: Int) {
         adaptiveTask?.cancel()
         adaptiveTask = Task { [weak self] in
@@ -880,6 +900,8 @@ final class Streamer: ObservableObject {
                 }
                 previousStats = stats
 
+                let effectiveTarget = max(
+                    1_000_000, Int(Double(target) * self.thermalBitrateScale))
                 let dropped = self.client.takeDroppedFrameCount()
                 let sendDelayMs = self.client.takeMaxSendDelayMs()
                 if dropped > 0 || sendDelayMs > 200 {
@@ -892,11 +914,15 @@ final class Streamer: ObservableObject {
                               + "\(dropped), send delay \(sendDelayMs) ms) "
                               + "-> \(current / 1000) kbps")
                     }
-                } else if current < target {
+                } else if current > effectiveTarget {
+                    current = effectiveTarget
+                    self.encoder?.setBitrate(current)
+                    print("Thermal cap -> \(current / 1000) kbps")
+                } else if current < effectiveTarget {
                     stableSeconds += 1
                     if stableSeconds >= 10 {
                         stableSeconds = 0
-                        current = min(target, current * 11 / 10)
+                        current = min(effectiveTarget, current * 11 / 10)
                         self.encoder?.setBitrate(current)
                     }
                 }
