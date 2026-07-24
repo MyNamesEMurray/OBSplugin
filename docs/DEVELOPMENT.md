@@ -89,6 +89,15 @@ can't trigger a bump. Manual releases also work — push any `v*` tag:
 git tag v0.4.0 && git push origin v0.4.0
 ```
 
+The **Linux** release job builds its own minimal static FFmpeg
+(H.264/HEVC decode + VAAPI, cached between runs) and links it into
+`lenslink.so`, because a tarball linked against the runner's shared
+FFmpeg only loads on distros shipping that same FFmpeg major
+(issue #65 — `libavcodec.so.60` missing on Arch). The job verifies the
+binary has no `libavcodec`/`libavutil` `NEEDED` entries before
+packaging. Local/source builds are unaffected — they link the system
+FFmpeg via pkg-config, which always matches the machine they run on.
+
 ### Release notes
 
 Every release page follows a fixed template: a compact **Install** table

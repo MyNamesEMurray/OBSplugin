@@ -27,6 +27,8 @@ jobs:
   plugin-linux:
     name: OBS plugin (Linux)
     runs-on: ubuntu-latest
+    env:
+      FFMPEG_VERSION: "7.1"
     steps:
       - uses: actions/checkout@v7
 
@@ -34,20 +36,68 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake pkg-config libobs-dev qt6-base-dev \
-            libavcodec-dev libavutil-dev
+            nasm libva-dev libdrm-dev
+
+      # The release tarball has to run on every distro, but linking the
+      # runner's shared FFmpeg pins an FFmpeg-major soname
+      # (libavcodec.so.60) that rolling distros no longer ship — the
+      # plugin then fails to load at all (issue #65). So releases link a
+      # minimal static FFmpeg (H.264/HEVC decode + VAAPI, nothing else);
+      # the only FFmpeg-related runtime needs left are libva/libva-drm,
+      # whose soname has been stable since 2017 and which every
+      # VAAPI-capable system already ships.
+      - name: Cache static FFmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v6
+        with:
+          path: ffmpeg-static
+          key: ffmpeg-static-${{ env.FFMPEG_VERSION }}-decode-vaapi-v1
+
+      - name: Build static FFmpeg (H.264/HEVC decode + VAAPI only)
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          curl -LO "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
+          tar xf "ffmpeg-${FFMPEG_VERSION}.tar.xz"
+          cd "ffmpeg-${FFMPEG_VERSION}"
+          ./configure --prefix="$GITHUB_WORKSPACE/ffmpeg-static" \
+            --disable-everything --disable-programs --disable-doc \
+            --disable-avformat --disable-avfilter --disable-swscale \
+            --disable-swresample --disable-avdevice --disable-network \
+            --disable-debug --disable-autodetect \
+            --enable-decoder=h264,hevc --enable-parser=h264,hevc \
+            --enable-vaapi --enable-hwaccel=h264_vaapi,hevc_vaapi \
+            --enable-pic --disable-shared --enable-static
+          make -j"$(nproc)"
+          make install
 
       # The grep guard: the status-bar/dock UI degrades *silently* when Qt6
       # or obs-frontend-api.h is missing (that's how releases shipped
       # without it once) — a release build must fail instead.
+      #
+      # --exclude-libs,ALL hides the static FFmpeg's symbols in the module:
+      # the link fails without it (FFmpeg's asm uses PC-relative refs that
+      # need non-preemptible symbols), and the OBS process carries its own
+      # shared FFmpeg whose symbols must never interpose ours.
       - name: Build
         run: |
           set -o pipefail
           version="${{ inputs.tag_name || github.ref_name }}"
+          PKG_CONFIG_PATH="$GITHUB_WORKSPACE/ffmpeg-static/lib/pkgconfig" \
           cmake -B build -DCMAKE_BUILD_TYPE=Release \
-            -DLENSLINK_VERSION="${version#v}" | tee configure.log
+            -DLENSLINK_VERSION="${version#v}" \
+            -DCMAKE_MODULE_LINKER_FLAGS="-Wl,--exclude-libs,ALL" \
+            | tee configure.log
           grep -q "frontend UI enabled" configure.log
           cmake --build build
         working-directory: obs-plugin
+
+      # Fail the release if the binary regressed to soname-coupled shared
+      # FFmpeg (the exact breakage of issue #65), or lost its VAAPI link.
+      - name: Verify FFmpeg linked statically
+        run: |
+          readelf -d obs-plugin/build/lenslink.so | tee needed.log
+          ! grep -E "NEEDED.*(libavcodec|libavutil)" needed.log
+          grep -qE "NEEDED.*libva\.so" needed.log
 
       - name: Package (extract into ~/.config/obs-studio/plugins)
         run: |

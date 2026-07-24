@@ -310,6 +310,14 @@ are the places to watch.
   Apple's Camera-app filters and Photographic Styles aren't available
   to any third-party camera app — for creative looks, add filters to
   the source in OBS instead (right-click the source → **Filters**).
+- **Plugin doesn't appear in OBS on Linux — log says
+  `libavcodec.so.60: cannot open shared object file`:** release tarballs
+  up to v1.7.x linked the build machine's FFmpeg, so they only loaded on
+  distros shipping that exact FFmpeg major (Ubuntu 24.04's FFmpeg 6). On
+  rolling distros like Arch, OBS skipped the plugin entirely. Fix: update
+  to the next release (its tarball bundles the decoder and runs on any
+  distro), or build from source with `obs-plugin/BUILDING.md` — a local
+  build links your system's own FFmpeg and always matches.
 - **Screen broadcast won't connect (sideloaded only):** re-signing can
   silently break the broadcast extension. In the app, open **Screen mirror
   tools → Check broadcast link** while a broadcast is running — it verifies
